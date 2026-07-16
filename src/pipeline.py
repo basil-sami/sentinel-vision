@@ -15,9 +15,9 @@ def analyze_video(
     conf_threshold: float = 0.5,
     device: str = "cpu",
     max_frames: int | None = None,
-    track_thresh: float = 0.5,
+    track_high_thresh: float = 0.5,
+    track_low_thresh: float = 0.1,
     track_buffer: int = 30,
-    match_thresh: float = 0.8,
     trail_length: int = 50,
 ) -> dict:
     output_dir = Path(output_dir)
@@ -26,9 +26,9 @@ def analyze_video(
     loader = VideoLoader(video_path)
     detector = YOLODetector(model_size=model_size, device=device)
     tracker = Tracker(
-        track_thresh=track_thresh,
+        track_high_thresh=track_high_thresh,
+        track_low_thresh=track_low_thresh,
         track_buffer=track_buffer,
-        match_thresh=match_thresh,
     )
     history = ObjectHistory()
 
