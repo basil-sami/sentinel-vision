@@ -1,30 +1,27 @@
 from dataclasses import dataclass
-import importlib
 import numpy as np
 
 
-_BYTE_BACKENDS = [
-    "boxmot.trackers.bytetrack.bytetrack:ByteTrack",
-    "boxmot.trackers.bbox.bytetrack:ByteTrack",
-    "boxmot.trackers.bbox.bytetrack.bytetrack:ByteTrack",
-    "boxmot.trackers.bbox:ByteTrack",
-    "boxmot.trackers:ByteTrack",
-    "boxmot:ByteTrack",
-]
-_BYTETRACK_CLS = None
-for _path in _BYTE_BACKENDS:
+try:
+    from boxmot.trackers.bytetrack.bytetrack import ByteTrack as _ByteTrack
+except ImportError:
     try:
-        mod_path, cls_name = _path.rsplit(":", 1)
-        mod = importlib.import_module(mod_path)
-        _BYTETRACK_CLS = getattr(mod, cls_name)
-        break
-    except (ImportError, AttributeError):
-        continue
-if _BYTETRACK_CLS is None:
-    raise ImportError(
-        f"Could not import ByteTrack from any known path: {_BYTE_BACKENDS}. "
-        f"Current boxmot version: {importlib.import_module('boxmot').__version__}"
-    )
+        from boxmot.trackers.bbox.bytetrack import ByteTrack as _ByteTrack
+    except ImportError:
+        try:
+            from boxmot.trackers.bbox.bytetrack.bytetrack import ByteTrack as _ByteTrack
+        except ImportError:
+            try:
+                from boxmot.trackers import ByteTrack as _ByteTrack
+            except ImportError:
+                try:
+                    from boxmot import ByteTrack as _ByteTrack
+                except ImportError:
+                    import boxmot
+                    raise ImportError(
+                        f"Could not import ByteTrack from boxmot v{boxmot.__version__}. "
+                        "Try: pip install -U boxmot>=19"
+                    )
 
 
 @dataclass
@@ -58,7 +55,7 @@ class Tracker:
         track_buffer: int = 30,
         match_thresh: float = 0.8,
     ):
-        self.tracker = _BYTETRACK_CLS(
+        self.tracker = _ByteTrack(
             track_thresh=track_thresh,
             track_buffer=track_buffer,
             match_thresh=match_thresh,
