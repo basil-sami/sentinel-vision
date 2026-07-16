@@ -3,8 +3,10 @@ import numpy as np
 
 
 _BYTE_BACKENDS = [
-    "boxmot.trackers.ByteTrack",
+    "boxmot.trackers.bbox.ByteTrack",
     "boxmot.trackers.bbox.bytetrack.ByteTrack",
+    "boxmot.trackers.bbox.bytetrack.bytetrack.ByteTrack",
+    "boxmot.trackers.ByteTrack",
     "boxmot.ByteTrack",
 ]
 _BYTETRACK_CLS = None
