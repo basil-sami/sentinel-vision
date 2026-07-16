@@ -46,6 +46,31 @@ class Annotator:
         cv2.imwrite(str(frame_path), frame_bgr)
         self._frame_index += 1
 
+    def probe(self, path: Path | None = None) -> dict | None:
+        path = path or self.output_path
+        try:
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_format", "-show_streams",
+                 "-of", "json", str(path)],
+                capture_output=True, text=True, check=True,
+            )
+            import json
+            info = json.loads(result.stdout)
+            print(f"\n--- Probe: {path.name} ---")
+            if "format" in info:
+                fmt = info["format"]
+                print(f"  Format: {fmt.get('format_name')}  duration: {fmt.get('duration','?')}s")
+            for s in info.get("streams", []):
+                print(f"  Stream #{s['index']}: {s.get('codec_type')}  "
+                      f"codec: {s.get('codec_name')}  "
+                      f"{s.get('width','?')}x{s.get('height','?')}  "
+                      f"fps: {s.get('r_frame_rate','?')}")
+            print("---\n")
+            return info
+        except Exception as e:
+            print(f"  Probe failed: {e}")
+            return None
+
     def release(self):
         if self._frame_index == 0:
             return
@@ -61,6 +86,6 @@ class Annotator:
             str(self.output_path),
         ]
         subprocess.run(cmd, check=True, capture_output=True)
-        import shutil
-        shutil.rmtree(self.frame_dir)
-        print(f"Video saved to {self.output_path}")
+        self.probe()
+        print(f"Raw frames kept in: {self.frame_dir}/")
+        print(f"Video saved to: {self.output_path}")
