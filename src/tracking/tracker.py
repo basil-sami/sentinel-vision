@@ -4,6 +4,7 @@ import numpy as np
 
 
 _BYTE_BACKENDS = [
+    "boxmot.trackers.bytetrack.bytetrack:ByteTrack",
     "boxmot.trackers.bbox.bytetrack:ByteTrack",
     "boxmot.trackers.bbox.bytetrack.bytetrack:ByteTrack",
     "boxmot.trackers.bbox:ByteTrack",
@@ -22,8 +23,7 @@ for _path in _BYTE_BACKENDS:
 if _BYTETRACK_CLS is None:
     raise ImportError(
         f"Could not import ByteTrack from any known path: {_BYTE_BACKENDS}. "
-        "Try: pip install -U boxmot>=22. "
-        "Current boxmot version: " + importlib.import_module("boxmot").__version__
+        f"Current boxmot version: {importlib.import_module('boxmot').__version__}"
     )
 
 
@@ -33,7 +33,7 @@ class Track:
     class_id: int
     class_name: str
     confidence: float
-    bbox: tuple[int, int, int, int]  # x1, y1, x2, y2
+    bbox: tuple[int, int, int, int]
 
     def to_dict(self) -> dict:
         return {
@@ -54,14 +54,14 @@ COCO_CLASSES = {
 class Tracker:
     def __init__(
         self,
-        track_high_thresh: float = 0.5,
-        track_low_thresh: float = 0.1,
+        track_thresh: float = 0.5,
         track_buffer: int = 30,
+        match_thresh: float = 0.8,
     ):
         self.tracker = _BYTETRACK_CLS(
-            track_high_thresh=track_high_thresh,
-            track_low_thresh=track_low_thresh,
+            track_thresh=track_thresh,
             track_buffer=track_buffer,
+            match_thresh=match_thresh,
         )
         self._class_map = COCO_CLASSES
 
@@ -77,14 +77,20 @@ class Tracker:
 
         raw_tracks = self.tracker.update(dets_np, frame)
 
+        if raw_tracks.shape[0] == 0:
+            return []
+
         tracks = []
         for t in raw_tracks:
-            x1, y1, x2, y2, track_id, conf, cls_id = map(int, t[:7])
+            x1, y1, x2, y2 = int(t[0]), int(t[1]), int(t[2]), int(t[3])
+            track_id = int(t[4])
+            conf = float(t[5])
+            cls_id = int(t[6])
             tracks.append(Track(
-                id=int(track_id),
+                id=track_id,
                 class_id=cls_id,
                 class_name=self._class_map.get(cls_id, "unknown"),
-                confidence=float(conf),
-                bbox=(int(x1), int(y1), int(x2), int(y2)),
+                confidence=conf,
+                bbox=(x1, y1, x2, y2),
             ))
         return tracks
