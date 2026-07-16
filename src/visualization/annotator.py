@@ -1,5 +1,7 @@
+import subprocess
 import cv2
 import numpy as np
+from pathlib import Path
 
 
 _COLORS = [
@@ -15,17 +17,13 @@ def _id_color(object_id: int) -> tuple[int, int, int]:
 
 class Annotator:
     def __init__(self, output_path: str, fps: float, width: int, height: int):
-        self.output_path = output_path
-        codecs = ["avc1", "mp4v", "X264"]
-        self.writer = None
-        for codec in codecs:
-            fourcc = cv2.VideoWriter_fourcc(*codec.ljust(4)[:4])
-            writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-            if writer.isOpened():
-                self.writer = writer
-                break
-        if self.writer is None:
-            raise RuntimeError(f"Could not open VideoWriter with any codec ({codecs}) for {output_path}")
+        self.output_path = Path(output_path)
+        self.fps = fps
+        self.width = width
+        self.height = height
+        self.frame_dir = self.output_path.with_suffix("")
+        self.frame_dir.mkdir(parents=True, exist_ok=True)
+        self._frame_index = 0
 
     def draw_detections(self, frame: np.ndarray, detections: list, object_id: int | None = None) -> np.ndarray:
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
@@ -44,7 +42,25 @@ class Annotator:
 
     def write_frame(self, frame: np.ndarray):
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        self.writer.write(frame_bgr)
+        frame_path = self.frame_dir / f"{self._frame_index:08d}.png"
+        cv2.imwrite(str(frame_path), frame_bgr)
+        self._frame_index += 1
 
     def release(self):
-        self.writer.release()
+        if self._frame_index == 0:
+            return
+        print(f"Encoding {self._frame_index} frames to {self.output_path} via ffmpeg...")
+        cmd = [
+            "ffmpeg", "-y",
+            "-framerate", str(self.fps),
+            "-i", str(self.frame_dir / "%08d.png"),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "fast",
+            "-crf", "23",
+            str(self.output_path),
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        import shutil
+        shutil.rmtree(self.frame_dir)
+        print(f"Video saved to {self.output_path}")
