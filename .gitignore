@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+outputs/*.mp4
+outputs/*.json
+outputs/*.txt
+models/*.pt
