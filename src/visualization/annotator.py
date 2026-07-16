@@ -16,8 +16,16 @@ def _id_color(object_id: int) -> tuple[int, int, int]:
 class Annotator:
     def __init__(self, output_path: str, fps: float, width: int, height: int):
         self.output_path = output_path
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self.writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        codecs = ["avc1", "mp4v", "X264"]
+        self.writer = None
+        for codec in codecs:
+            fourcc = cv2.VideoWriter_fourcc(*codec.ljust(4)[:4])
+            writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            if writer.isOpened():
+                self.writer = writer
+                break
+        if self.writer is None:
+            raise RuntimeError(f"Could not open VideoWriter with any codec ({codecs}) for {output_path}")
 
     def draw_detections(self, frame: np.ndarray, detections: list, object_id: int | None = None) -> np.ndarray:
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
