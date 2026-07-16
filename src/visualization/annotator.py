@@ -40,6 +40,39 @@ class Annotator:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
+    def draw_tracks(
+        self,
+        frame: np.ndarray,
+        tracks: list,
+        history: object,
+        trail_length: int = 50,
+    ) -> np.ndarray:
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        for track in tracks:
+            x1, y1, x2, y2 = track.bbox
+            color = _id_color(track.id)
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+
+            rec = history.get(track.id)
+            if rec and len(rec.positions) > 1:
+                trail = rec.positions[-trail_length:]
+                for j in range(1, len(trail)):
+                    alpha = j / len(trail)
+                    trail_color = (
+                        int(color[0] * alpha),
+                        int(color[1] * alpha),
+                        int(color[2] * alpha),
+                    )
+                    cv2.line(frame_bgr, trail[j - 1], trail[j], trail_color, 2)
+
+            cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, 2)
+            label = f"ID {track.id} {track.class_name} {track.confidence:.2f}"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(frame_bgr, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+            cv2.putText(frame_bgr, label, (x1 + 2, y1 - 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
     def write_frame(self, frame: np.ndarray):
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         frame_path = self.frame_dir / f"{self._frame_index:08d}.png"
