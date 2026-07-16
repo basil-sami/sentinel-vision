@@ -1,6 +1,26 @@
 from dataclasses import dataclass
 import numpy as np
-from boxmot.trackers import ByteTrack as _ByteTrack
+
+
+_BYTE_BACKENDS = [
+    "boxmot.trackers.ByteTrack",
+    "boxmot.trackers.bbox.bytetrack.ByteTrack",
+    "boxmot.ByteTrack",
+]
+_BYTETRACK_CLS = None
+for _path in _BYTE_BACKENDS:
+    try:
+        *mod_parts, cls_name = _path.rsplit(".", 1)
+        mod = __import__(".".join(mod_parts), fromlist=[cls_name])
+        _BYTETRACK_CLS = getattr(mod, cls_name)
+        break
+    except (ImportError, AttributeError):
+        continue
+if _BYTETRACK_CLS is None:
+    raise ImportError(
+        f"Could not import ByteTrack from any known path: {_BYTE_BACKENDS}. "
+        "Try: pip install -U boxmot>=22"
+    )
 
 
 @dataclass
@@ -34,7 +54,7 @@ class Tracker:
         track_low_thresh: float = 0.1,
         track_buffer: int = 30,
     ):
-        self.tracker = _ByteTrack(
+        self.tracker = _BYTETRACK_CLS(
             track_high_thresh=track_high_thresh,
             track_low_thresh=track_low_thresh,
             track_buffer=track_buffer,
