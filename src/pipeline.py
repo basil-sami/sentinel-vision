@@ -3,6 +3,8 @@ from tqdm import tqdm
 
 from src.video import VideoLoader
 from src.detection import YOLODetector
+from src.tracking.tracker import Tracker
+from src.analytics.object_history import ObjectHistory
 from src.visualization import Annotator
 
 
@@ -13,12 +15,22 @@ def analyze_video(
     conf_threshold: float = 0.5,
     device: str = "cpu",
     max_frames: int | None = None,
+    track_thresh: float = 0.5,
+    track_buffer: int = 30,
+    match_thresh: float = 0.8,
+    trail_length: int = 50,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     loader = VideoLoader(video_path)
     detector = YOLODetector(model_size=model_size, device=device)
+    tracker = Tracker(
+        track_thresh=track_thresh,
+        track_buffer=track_buffer,
+        match_thresh=match_thresh,
+    )
+    history = ObjectHistory()
 
     output_video_path = str(output_dir / "output_tracking.mp4")
     annotator = Annotator(
@@ -29,25 +41,17 @@ def analyze_video(
     )
 
     total_frames = min(loader.frame_count, max_frames) if max_frames else loader.frame_count
-    object_counts: dict[str, int] = {}
-    all_detections: list[dict] = []
-
     pbar = tqdm(total=total_frames, desc="Processing video")
+
     for i, frame in enumerate(loader):
         if max_frames and i >= max_frames:
             break
 
         detections = detector.detect(frame, conf_threshold=conf_threshold)
+        tracks = tracker.update(detections, frame)
+        history.update(tracks, i)
 
-        for det in detections:
-            object_counts[det.class_name] = object_counts.get(det.class_name, 0) + 1
-            all_detections.append({
-                "frame": i,
-                "time": round(i / loader.fps, 2),
-                **det.to_dict(),
-            })
-
-        annotated = annotator.draw_detections(frame, detections)
+        annotated = annotator.draw_tracks(frame, tracks, history, trail_length=trail_length)
         annotator.write_frame(annotated)
         pbar.update(1)
 
@@ -55,15 +59,20 @@ def analyze_video(
     annotator.release()
     loader.release()
 
+    objects_export = history.export()
+    total_tracked = len(objects_export)
+    all_detection_count = sum(len(o["path"]) for o in objects_export)
+
     result = {
         "video": str(Path(video_path).name),
         "video_duration_sec": round(loader.duration, 2),
         "total_frames_processed": total_frames,
         "fps": loader.fps,
         "resolution": f"{loader.width}x{loader.height}",
-        "total_detections": len(all_detections),
-        "object_counts": object_counts,
-        "detections": all_detections,
+        "total_objects_tracked": total_tracked,
+        "total_detections": all_detection_count,
+        "object_counts": history.summary()["by_class"],
+        "objects": objects_export,
         "output_video": output_video_path,
     }
 
@@ -80,10 +89,20 @@ def analyze_video(
         f"Resolution: {result['resolution']}",
         f"Frames processed: {result['total_frames_processed']}",
         f"",
-        f"Object detections (counted per frame):",
+        f"Unique objects tracked: {total_tracked}",
+        f"Total detections (across frames): {all_detection_count}",
+        f"",
+        f"Objects by class:",
     ]
-    for cls, count in sorted(object_counts.items()):
+    for cls, count in sorted(history.summary()["by_class"].items()):
         summary_lines.append(f"  {cls}: {count}")
+    summary_lines.append(f"")
+    if objects_export:
+        longest = max(objects_export, key=lambda o: o["duration_frames"])
+        summary_lines.append(
+            f"Longest tracked object: ID {longest['id']} "
+            f"({longest['class']}) — {longest['duration_frames']} frames"
+        )
     summary_lines.append(f"")
     summary_lines.append(f"Annotated video: {output_video_path}")
     summary_lines.append(f"JSON report: {analytics_path}")
