@@ -1,19 +1,20 @@
 from dataclasses import dataclass
+import importlib
 import numpy as np
 
 
 _BYTE_BACKENDS = [
-    "boxmot.trackers.bbox.ByteTrack",
-    "boxmot.trackers.bbox.bytetrack.ByteTrack",
-    "boxmot.trackers.bbox.bytetrack.bytetrack.ByteTrack",
-    "boxmot.trackers.ByteTrack",
-    "boxmot.ByteTrack",
+    "boxmot.trackers.bbox.bytetrack:ByteTrack",
+    "boxmot.trackers.bbox.bytetrack.bytetrack:ByteTrack",
+    "boxmot.trackers.bbox:ByteTrack",
+    "boxmot.trackers:ByteTrack",
+    "boxmot:ByteTrack",
 ]
 _BYTETRACK_CLS = None
 for _path in _BYTE_BACKENDS:
     try:
-        *mod_parts, cls_name = _path.rsplit(".", 1)
-        mod = __import__(".".join(mod_parts), fromlist=[cls_name])
+        mod_path, cls_name = _path.rsplit(":", 1)
+        mod = importlib.import_module(mod_path)
         _BYTETRACK_CLS = getattr(mod, cls_name)
         break
     except (ImportError, AttributeError):
@@ -21,7 +22,8 @@ for _path in _BYTE_BACKENDS:
 if _BYTETRACK_CLS is None:
     raise ImportError(
         f"Could not import ByteTrack from any known path: {_BYTE_BACKENDS}. "
-        "Try: pip install -U boxmot>=22"
+        "Try: pip install -U boxmot>=22. "
+        "Current boxmot version: " + importlib.import_module("boxmot").__version__
     )
 
 
