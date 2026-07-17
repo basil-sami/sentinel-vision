@@ -104,10 +104,8 @@ class Annotator:
             print(f"  Probe failed: {e}")
             return None
 
-    def release(self):
-        if self._frame_index == 0:
-            return
-        print(f"Encoding {self._frame_index} frames to {self.output_path} via ffmpeg...")
+    def _encode_ffmpeg(self):
+        print(f"Encoding {self._frame_index} frames via ffmpeg...")
         cmd = [
             "ffmpeg", "-y",
             "-framerate", str(self.fps),
@@ -119,6 +117,28 @@ class Annotator:
             str(self.output_path),
         ]
         subprocess.run(cmd, check=True, capture_output=True)
+
+    def _encode_opencv(self):
+        print(f"Encoding {self._frame_index} frames via OpenCV...")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(self.output_path), fourcc, self.fps,
+                                 (self.width, self.height))
+        if not writer.isOpened():
+            raise RuntimeError("OpenCV VideoWriter failed to open")
+        for i in range(self._frame_index):
+            frame_path = self.frame_dir / f"{i:08d}.png"
+            frame = cv2.imread(str(frame_path))
+            if frame is not None:
+                writer.write(frame)
+        writer.release()
+
+    def release(self):
+        if self._frame_index == 0:
+            return
+        try:
+            self._encode_ffmpeg()
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            self._encode_opencv()
         self.probe()
         print(f"Raw frames kept in: {self.frame_dir}/")
         print(f"Video saved to: {self.output_path}")
