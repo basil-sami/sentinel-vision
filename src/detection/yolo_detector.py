@@ -36,6 +36,8 @@ class YOLODetector:
             "nano": "yolo11n.pt",
             "small": "yolo11s.pt",
             "medium": "yolo11m.pt",
+            "large": "yolo11l.pt",
+            "xlarge": "yolo11x.pt",
         }
         model_name = model_map.get(model_size, "yolo11n.pt")
         self.model = YOLO(model_name)
