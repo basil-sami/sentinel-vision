@@ -2,6 +2,14 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class FrameEntry:
+    frame: int
+    bbox: tuple[int, int, int, int]
+    cx: int
+    cy: int
+
+
+@dataclass
 class ObjectRecord:
     id: int
     class_name: str
@@ -9,10 +17,14 @@ class ObjectRecord:
     first_frame: int
     last_frame: int
     positions: list[tuple[int, int]] = field(default_factory=list)
+    bboxes: list[tuple[int, int, int, int]] = field(default_factory=list)
 
-    def add_position(self, frame: int, cx: int, cy: int):
+    def add_position(self, frame: int, bbox: tuple[int, int, int, int]):
+        cx = (bbox[0] + bbox[2]) // 2
+        cy = (bbox[1] + bbox[3]) // 2
         self.last_frame = frame
         self.positions.append((cx, cy))
+        self.bboxes.append(bbox)
 
     @property
     def centroid_path(self) -> list[list[int]]:
@@ -41,8 +53,6 @@ class ObjectHistory:
     def update(self, tracks: list, frame_index: int):
         seen_ids = set()
         for t in tracks:
-            cx = (t.bbox[0] + t.bbox[2]) // 2
-            cy = (t.bbox[1] + t.bbox[3]) // 2
             if t.id not in self._objects:
                 self._objects[t.id] = ObjectRecord(
                     id=t.id,
@@ -51,7 +61,7 @@ class ObjectHistory:
                     first_frame=frame_index,
                     last_frame=frame_index,
                 )
-            self._objects[t.id].add_position(frame_index, cx, cy)
+            self._objects[t.id].add_position(frame_index, t.bbox)
             seen_ids.add(t.id)
 
     @property
