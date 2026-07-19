@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
+import torch
 
 try:
     from boxmot.trackers.botsort.botsort import BotSort
@@ -73,7 +74,8 @@ class Tracker:
 
         if use_reid and BotSort is not None:
             from boxmot.reid import ReID
-            _reid_model = ReID("osnet_x0_25_msmt17.pt", device=device, half=False)
+            _device = torch.device(device)
+            _reid_model = ReID("osnet_x0_25_msmt17.pt", device=_device, half=False)
             self.tracker = BotSort(
                 reid_model=_reid_model.model,
                 track_high_thresh=track_thresh,
