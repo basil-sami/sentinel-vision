@@ -64,8 +64,9 @@ class Tracker:
     def __init__(
         self,
         track_thresh: float = 0.5,
-        track_buffer: int = 30,
+        track_buffer: int = 300,
         match_thresh: float = 0.8,
+        track_low_thresh: float = 0.1,
         use_reid: bool = True,
         device: str = "cpu",
     ):
@@ -79,7 +80,7 @@ class Tracker:
             self.tracker = BotSort(
                 reid_model=_reid_model.model,
                 track_high_thresh=track_thresh,
-                track_low_thresh=max(0.1, track_thresh - 0.3),
+                track_low_thresh=track_low_thresh,
                 track_buffer=track_buffer,
                 match_thresh=match_thresh,
                 with_reid=True,
