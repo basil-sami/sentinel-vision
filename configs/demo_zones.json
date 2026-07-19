@@ -1,0 +1,21 @@
+{
+  "zones": [
+    {
+      "name": "Main Entrance",
+      "type": "restricted",
+      "polygon": [[100, 100], [300, 100], [300, 300], [100, 300]]
+    },
+    {
+      "name": "Walkway",
+      "type": "walkway",
+      "polygon": [[400, 50], [600, 50], [600, 350], [400, 350]]
+    }
+  ],
+  "gates": [
+    {
+      "name": "North Gate",
+      "p1": [0, 200],
+      "p2": [640, 200]
+    }
+  ]
+}
