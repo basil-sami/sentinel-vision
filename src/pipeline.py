@@ -15,7 +15,7 @@ from src.analytics.abandoned import AbandonedDetector
 from src.analytics.movement import movement_stats
 from src.models.event import EventStore, Event
 from src.visualization import Annotator
-from src.visualization.zone_renderer import draw_zones, draw_gates
+from src.visualization.zone_renderer import draw_zones, draw_gates, draw_event_ticker
 
 
 def analyze_video(
@@ -135,18 +135,16 @@ def analyze_video(
         annotated = annotator.draw_tracks(frame, tracks, history, trail_length=trail_length)
         annotated_bgr = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
 
+        active_zone_names = set()
+        for zset in _zone_state.values():
+            active_zone_names.update(zset)
+
         if zone_mgr.zones:
-            annotated_bgr = draw_zones(annotated_bgr, zone_mgr.zones, gate_counter.summary())
+            annotated_bgr = draw_zones(annotated_bgr, zone_mgr.zones, active_zone_names, gate_counter.summary())
         if zone_mgr.gates:
             annotated_bgr = draw_gates(annotated_bgr, zone_mgr.gates)
 
-        recent_events = events.all()[-5:]
-        y_offset = annotated_bgr.shape[0] - 20 * len(recent_events) - 10
-        for ev in recent_events:
-            msg = ev.message[:60]
-            cv2.putText(annotated_bgr, msg, (10, y_offset),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1)
-            y_offset += 18
+        annotated_bgr = draw_event_ticker(annotated_bgr, events.all())
 
         annotated = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
         annotator.write_frame(annotated)
