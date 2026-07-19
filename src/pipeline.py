@@ -19,6 +19,7 @@ def analyze_video(
     match_thresh: float = 0.8,
     track_buffer: int = 30,
     trail_length: int = 50,
+    use_reid: bool = True,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -29,6 +30,8 @@ def analyze_video(
         track_thresh=track_thresh,
         match_thresh=match_thresh,
         track_buffer=track_buffer,
+        use_reid=use_reid,
+        device=device,
     )
     history = ObjectHistory()
 

@@ -11,3 +11,4 @@ outputs/output_tracking/
 outputs/*.json
 outputs/*.txt
 models/*.pt
+yolo11s.pt

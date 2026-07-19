@@ -1,25 +1,36 @@
 from dataclasses import dataclass
+from pathlib import Path
 import numpy as np
 
-
 try:
-    from boxmot.trackers.bytetrack.bytetrack import ByteTrack as _ByteTrack
+    from boxmot.trackers.botsort.botsort import BotSort
 except ImportError:
     try:
-        from boxmot.trackers.bbox.bytetrack import ByteTrack as _ByteTrack
+        from boxmot.trackers.bbox.botsort import BotSort
     except ImportError:
         try:
-            from boxmot.trackers.bbox.bytetrack.bytetrack import ByteTrack as _ByteTrack
+            from boxmot.trackers import BotSort
+        except ImportError:
+            BotSort = None
+
+try:
+    from boxmot.trackers.bytetrack.bytetrack import ByteTrack
+except ImportError:
+    try:
+        from boxmot.trackers.bbox.bytetrack import ByteTrack
+    except ImportError:
+        try:
+            from boxmot.trackers.bbox.bytetrack.bytetrack import ByteTrack
         except ImportError:
             try:
-                from boxmot.trackers import ByteTrack as _ByteTrack
+                from boxmot.trackers import ByteTrack
             except ImportError:
                 try:
-                    from boxmot import ByteTrack as _ByteTrack
+                    from boxmot import ByteTrack
                 except ImportError:
                     import boxmot
                     raise ImportError(
-                        f"Could not import ByteTrack from boxmot v{boxmot.__version__}. "
+                        f"Could not import ByteTrack or BotSort from boxmot v{boxmot.__version__}. "
                         "Try: pip install -U boxmot>=19"
                     )
 
@@ -54,13 +65,29 @@ class Tracker:
         track_thresh: float = 0.5,
         track_buffer: int = 30,
         match_thresh: float = 0.8,
+        use_reid: bool = True,
+        device: str = "cpu",
     ):
-        self.tracker = _ByteTrack(
-            track_thresh=track_thresh,
-            track_buffer=track_buffer,
-            match_thresh=match_thresh,
-        )
         self._class_map = COCO_CLASSES
+        self._device = device
+
+        if use_reid and BotSort is not None:
+            from boxmot.reid import ReID
+            _reid_model = ReID("osnet_x0_25_msmt17.pt", device=device, half=False)
+            self.tracker = BotSort(
+                reid_model=_reid_model.model,
+                track_high_thresh=track_thresh,
+                track_low_thresh=max(0.1, track_thresh - 0.3),
+                track_buffer=track_buffer,
+                match_thresh=match_thresh,
+                with_reid=True,
+            )
+        else:
+            self.tracker = ByteTrack(
+                track_thresh=track_thresh,
+                track_buffer=track_buffer,
+                match_thresh=match_thresh,
+            )
 
     def update(self, detections: list, frame: np.ndarray) -> list[Track]:
         if not detections:
