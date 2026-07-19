@@ -6,3 +6,16 @@ scipy>=1.11.0
 tqdm>=4.65.0
 yt-dlp>=2024.0.0
 boxmot>=19.0.0
+
+# Config system
+pyyaml>=6.0
+
+# Vehicle Intelligence (ANPR) — install at least one:
+#   pip install easyocr         # lightweight OCR fallback
+#   pip install paddlepaddle paddleocr  # production-grade ANPR (preferred)
+
+# Optimizations (optional — install only for multi-camera / production use)
+# numba: JIT-compiles hot loops (zone containment, gate crossing)
+#   pip install numba
+# tensorrt: ~5x inference speedup on NVIDIA GPUs
+#   pip install tensorrt  # or nvidia-tensorrt for containerized envs

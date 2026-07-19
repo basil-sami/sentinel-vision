@@ -1,0 +1,5 @@
+fps: 25
+resolution: [640, 360]
+timezone: UTC
+max_frames: null
+output_dir: outputs

@@ -1,0 +1,8 @@
+model_family: yolo11
+model_size: nano
+conf_threshold: 0.4
+device: cuda
+use_tensorrt: false
+tensorrt_half: true
+# Override target classes (null = use all 62 COCO surveillance classes)
+target_classes: null

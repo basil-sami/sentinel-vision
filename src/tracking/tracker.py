@@ -55,19 +55,89 @@ class Track:
 
 
 COCO_CLASSES = {
-    0: "person", 1: "bicycle", 2: "car", 3: "motorcycle",
-    5: "bus", 7: "truck",
+    0: "person",
+    1: "bicycle",
+    2: "car",
+    3: "motorcycle",
+    5: "bus",
+    7: "truck",
+    24: "backpack",
+    25: "umbrella",
+    26: "handbag",
+    27: "tie",
+    28: "suitcase",
+    29: "frisbee",
+    30: "skis",
+    31: "snowboard",
+    32: "sports ball",
+    33: "kite",
+    34: "baseball bat",
+    35: "baseball glove",
+    36: "skateboard",
+    37: "surfboard",
+    38: "tennis racket",
+    39: "bottle",
+    40: "wine glass",
+    41: "cup",
+    42: "fork",
+    43: "knife",
+    44: "spoon",
+    45: "bowl",
+    46: "banana",
+    47: "apple",
+    48: "sandwich",
+    49: "orange",
+    50: "broccoli",
+    51: "carrot",
+    52: "hot dog",
+    53: "pizza",
+    54: "donut",
+    55: "cake",
+    56: "chair",
+    57: "couch",
+    58: "potted plant",
+    59: "bed",
+    60: "dining table",
+    61: "toilet",
+    62: "tv",
+    63: "laptop",
+    64: "mouse",
+    65: "remote",
+    66: "keyboard",
+    67: "cell phone",
+    68: "microwave",
+    69: "oven",
+    70: "toaster",
+    71: "sink",
+    72: "refrigerator",
+    73: "book",
+    74: "clock",
+    75: "vase",
+    76: "scissors",
+    77: "teddy bear",
+    78: "hair drier",
+    79: "toothbrush",
+}
+
+
+REID_MODELS = {
+    "x0_25": "osnet_x0_25_msmt17.pt",
+    "x0_5": "osnet_x0_5_msmt17.pt",
+    "x0_75": "osnet_x0_75_msmt17.pt",
+    "x1_0": "osnet_x1_0_msmt17.pt",
+    "ain_x1_0": "osnet_ain_x1_0_msmt17.pt",
 }
 
 
 class Tracker:
     def __init__(
         self,
-        track_thresh: float = 0.5,
-        track_buffer: int = 300,
-        match_thresh: float = 0.8,
+        track_thresh: float = 0.4,
+        track_buffer: int = 450,
+        match_thresh: float = 0.7,
         track_low_thresh: float = 0.1,
         use_reid: bool = True,
+        reid_model: str = "x1_0",
         device: str = "cpu",
     ):
         self._class_map = COCO_CLASSES
@@ -76,7 +146,8 @@ class Tracker:
         if use_reid and BotSort is not None:
             from boxmot.reid import ReID
             _device = torch.device(device)
-            _reid_model = ReID("osnet_x0_25_msmt17.pt", device=_device, half=False)
+            reid_name = REID_MODELS.get(reid_model, "osnet_x1_0_msmt17.pt")
+            _reid_model = ReID(reid_name, device=_device, half=False)
             self.tracker = BotSort(
                 reid_model=_reid_model.model,
                 track_high_thresh=track_thresh,

@@ -7,6 +7,7 @@ from src.detection import YOLODetector
 from src.tracking.tracker import Tracker
 from src.analytics.object_history import ObjectHistory
 from src.analytics.merge_fragments import merge_fragments
+from src.analytics.stationary_filter import filter_stationary
 from src.analytics.zones import ZoneManager
 from src.analytics.counting import GateCounter
 from src.analytics.dwell import DwellTracker
@@ -16,6 +17,7 @@ from src.analytics.movement import movement_stats
 from src.analytics.calibration import Calibrator
 from src.analytics.interaction import InteractionModel
 from src.analytics.evidence import EvidenceCapture
+from src.analytics.vehicle.orchestrator import VehicleAnalyzer
 from src.models.event import EventStore, Event
 from src.visualization import Annotator
 from src.visualization.zone_renderer import draw_zones, draw_gates, draw_event_ticker
@@ -24,29 +26,42 @@ from src.visualization.zone_renderer import draw_zones, draw_gates, draw_event_t
 def analyze_video(
     video_path: str,
     output_dir: str = "outputs",
+    model_family: str = "yolo11",
     model_size: str = "nano",
-    conf_threshold: float = 0.25,
+    conf_threshold: float = 0.4,
     device: str = "cpu",
     max_frames: int | None = None,
-    track_thresh: float = 0.5,
-    match_thresh: float = 0.8,
-    track_buffer: int = 300,
+    track_thresh: float = 0.4,
+    match_thresh: float = 0.7,
+    track_low_thresh: float = 0.1,
+    track_buffer: int = 450,
     trail_length: int = 50,
     use_reid: bool = True,
+    reid_model: str = "x1_0",
     zone_config: dict | None = None,
     calibration_config: dict | None = None,
     capture_evidence: bool = True,
+    filter_stationary_objects: bool = True,
+    min_move_distance: float = 20.0,
+    target_classes: dict[int, str] | None = None,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     loader = VideoLoader(video_path)
-    detector = YOLODetector(model_size=model_size, device=device)
+    detector = YOLODetector(
+        model_family=model_family,
+        model_size=model_size,
+        device=device,
+        target_classes=target_classes,
+    )
     tracker = Tracker(
         track_thresh=track_thresh,
-        match_thresh=match_thresh,
+        track_low_thresh=track_low_thresh,
         track_buffer=track_buffer,
+        match_thresh=match_thresh,
         use_reid=use_reid,
+        reid_model=reid_model,
         device=device,
     )
     history = ObjectHistory()
@@ -65,6 +80,7 @@ def analyze_video(
     event_detector = EventDetector()
     abandoned_detector = AbandonedDetector(stationary_threshold_frames=track_buffer)
     interaction_model = InteractionModel()
+    vehicle_analyzer = VehicleAnalyzer()
 
     output_video_path = str(output_dir / "output_tracking.mp4")
     annotator = Annotator(
@@ -156,6 +172,11 @@ def analyze_video(
         for iev in interaction_events:
             events.add(iev)
 
+        # Vehicle intelligence
+        vehicle_events = vehicle_analyzer.process_frame(frame, tracks, i, calibrator)
+        for ve in vehicle_events:
+            events.add(ve)
+
         # Render
         annotated = annotator.draw_tracks(frame, tracks, history, trail_length=trail_length)
         annotated_bgr = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
@@ -186,6 +207,13 @@ def analyze_video(
             objects_export, track_buffer=track_buffer
         )
 
+    if filter_stationary_objects and objects_export:
+        objects_export = filter_stationary(
+            objects_export,
+            min_path_distance=min_move_distance,
+            min_duration_frames=5,
+        )
+
     total_tracked = len(objects_export)
     all_detection_count = sum(len(o["path"]) for o in objects_export)
 
@@ -213,6 +241,8 @@ def analyze_video(
         "gate_counts": gate_counter.summary(),
         "dwell_summary": dwell_tracker.summary(),
         "events": events.export(),
+        "vehicles": vehicle_analyzer.get_registry().summary(),
+        "vehicle_list": [v.to_dict() for v in vehicle_analyzer.get_registry().all()],
     }
 
     if evidence:

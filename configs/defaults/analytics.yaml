@@ -1,0 +1,21 @@
+zones_config_path: configs/demo_zones.json
+calibration_config_path: configs/demo_calibration.json
+capture_evidence: true
+filter_stationary_objects: true
+min_move_distance: 20.0
+
+loitering:
+  person_threshold_sec: 600
+  vehicle_threshold_sec: 300
+
+interaction:
+  proximity_threshold: 80.0
+  min_interaction_frames: 15
+
+abandoned:
+  max_association_distance: 80.0
+  stationary_threshold_frames: 450
+
+evidence:
+  pre_frames: 30
+  post_frames: 30

@@ -1,0 +1,8 @@
+enabled: true
+parking_timeout_sec: 300
+speeding_threshold_mps: 11.0
+plate_reader:
+  use_easyocr: true
+  min_plate_length: 3
+attributes:
+  enabled: true

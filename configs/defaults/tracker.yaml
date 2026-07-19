@@ -1,0 +1,7 @@
+use_reid: true
+reid_model: x1_0
+track_high_thresh: 0.4
+track_low_thresh: 0.1
+track_buffer: 450
+match_thresh: 0.7
+trail_length: 50

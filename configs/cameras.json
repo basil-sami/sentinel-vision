@@ -1,0 +1,31 @@
+{
+  "cameras": [
+    {
+      "id": "gate_north",
+      "name": "North Gate",
+      "source": "The CCTV People Demo 2.mp4",
+      "fps": 25,
+      "resolution": [640, 360],
+      "location": "Main Entrance - North",
+      "gps": [51.5074, -0.1278],
+      "timezone": "UTC",
+      "topology": {
+        "type": "entrance",
+        "building": "Main"
+      }
+    },
+    {
+      "id": "parking_lot",
+      "name": "Parking Lot West",
+      "source": "parking_cam.mp4",
+      "fps": 15,
+      "resolution": [1280, 720],
+      "location": "West Parking Lot",
+      "timezone": "America/New_York",
+      "topology": {
+        "type": "perimeter",
+        "zone": "west"
+      }
+    }
+  ]
+}
