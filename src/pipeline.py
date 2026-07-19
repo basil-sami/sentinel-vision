@@ -5,6 +5,7 @@ from src.video import VideoLoader
 from src.detection import YOLODetector
 from src.tracking.tracker import Tracker
 from src.analytics.object_history import ObjectHistory
+from src.analytics.merge_fragments import merge_fragments
 from src.visualization import Annotator
 
 
@@ -63,6 +64,12 @@ def analyze_video(
     loader.release()
 
     objects_export = history.export()
+
+    if use_reid and objects_export:
+        objects_export = merge_fragments(
+            objects_export, track_buffer=track_buffer
+        )
+
     total_tracked = len(objects_export)
     all_detection_count = sum(len(o["path"]) for o in objects_export)
 
