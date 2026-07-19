@@ -1,8 +1,8 @@
 import numpy as np
 
 
-_DIRECTIONS = ["north", "northeast", "east", "southeast",
-               "south", "southwest", "west", "northwest"]
+_DIRECTIONS = ["east", "northeast", "north", "northwest",
+               "west", "southwest", "south", "southeast"]
 
 
 def estimate_direction(dx: float, dy: float) -> str:
