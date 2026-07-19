@@ -1,28 +1,10 @@
 import numpy as np
 
 
-def _center(bbox):
-    x1, y1, x2, y2 = bbox
-    return np.array([(x1 + x2) / 2, (y1 + y2) / 2])
-
-
-def _iou(bbox_a, bbox_b):
-    x1 = max(bbox_a[0], bbox_b[0])
-    y1 = max(bbox_a[1], bbox_b[1])
-    x2 = min(bbox_a[2], bbox_b[2])
-    y2 = min(bbox_a[3], bbox_b[3])
-    inter = max(0, x2 - x1) * max(0, y2 - y1)
-    area_a = (bbox_a[2] - bbox_a[0]) * (bbox_a[3] - bbox_a[1])
-    area_b = (bbox_b[2] - bbox_b[0]) * (bbox_b[3] - bbox_b[1])
-    union = area_a + area_b - inter
-    return inter / union if union > 0 else 0
-
-
 def merge_fragments(
     objects: list[dict],
     track_buffer: int = 300,
     max_center_distance: float = 100.0,
-    min_iou: float = 0.1,
 ) -> list[dict]:
     if not objects:
         return []
@@ -31,22 +13,22 @@ def merge_fragments(
     for obj in objects:
         by_class.setdefault(obj["class"], []).append(obj)
 
-    merged_objects = {}
+    merged = {}
     next_id = 1
 
     for cls_name, cls_objects in by_class.items():
-        cls_objects.sort(key=lambda o: o["path"][0]["frame"])
+        cls_objects.sort(key=lambda o: o["first_frame"])
 
         for obj in cls_objects:
-            obj_path = obj["path"]
-            first_frame = obj_path[0]["frame"]
-            last_frame = obj_path[-1]["frame"]
-            first_bbox = obj_path[0]["bbox"]
-            last_bbox = obj_path[-1]["bbox"]
+            first_frame = obj["first_frame"]
+            last_frame = obj["last_frame"]
+            path = obj["path"]
+            first_pt = path[0] if path else [0, 0]
+            last_pt = path[-1] if path else [0, 0]
 
             matched = False
             candidates = sorted(
-                merged_objects.values(),
+                merged.values(),
                 key=lambda m: m["_last_frame"],
                 reverse=True,
             )
@@ -58,58 +40,43 @@ def merge_fragments(
                 if gap <= 0 or gap > track_buffer:
                     continue
 
-                existing_last_bbox = existing["_path"][-1]["bbox"]
+                existing_last_pt = existing["_path"][-1]
                 dist = np.linalg.norm(
-                    _center(first_bbox) - _center(existing_last_bbox)
+                    np.array(first_pt) - np.array(existing_last_pt)
                 )
-                iou = _iou(first_bbox, existing_last_bbox)
 
-                if dist > max_center_distance and iou < min_iou:
+                if dist > max_center_distance:
                     continue
 
-                offset = len(existing["_path"])
-                for entry in obj_path:
-                    entry["id"] = existing["id"]
-                    entry["path_index"] = offset
-                    offset += 1
-                existing["_path"].extend(obj_path)
-                existing["_last_detection_frame"] = last_frame
+                existing["_path"].extend(path)
                 existing["_last_frame"] = last_frame
                 matched = True
                 break
 
             if not matched:
-                new_id = next_id
-                next_id += 1
-                for entry in obj_path:
-                    entry["id"] = new_id
-                merged_objects[new_id] = {
-                    "id": new_id,
+                merged[next_id] = {
+                    "id": next_id,
                     "class": cls_name,
                     "class_id": obj["class_id"],
-                    "path": list(obj_path),
-                    "confidence": obj.get("confidence", 0),
-                    "_path": list(obj_path),
+                    "_first_frame": first_frame,
+                    "_path": list(path),
                     "_last_frame": last_frame,
                 }
+                next_id += 1
 
     result = []
-    for obj in merged_objects.values():
+    for obj in merged.values():
         path = obj["_path"]
-        first_frame = path[0]["frame"]
-        last_frame = path[-1]["frame"]
         result.append(
             {
                 "id": obj["id"],
                 "class": obj["class"],
                 "class_id": obj["class_id"],
-                "duration_frames": last_frame - first_frame + 1,
-                "first_frame": first_frame,
-                "last_frame": last_frame,
+                "duration_frames": obj["_last_frame"] - obj["_first_frame"] + 1,
+                "first_frame": obj["_first_frame"],
+                "last_frame": obj["_last_frame"],
                 "path": path,
-                "confidence": round(
-                    np.mean([p.get("confidence", 0) for p in path]), 3
-                ),
+                "confidence": 0.0,
             }
         )
 
