@@ -13,6 +13,9 @@ from src.analytics.dwell import DwellTracker
 from src.analytics.events import EventDetector
 from src.analytics.abandoned import AbandonedDetector
 from src.analytics.movement import movement_stats
+from src.analytics.calibration import Calibrator
+from src.analytics.interaction import InteractionModel
+from src.analytics.evidence import EvidenceCapture
 from src.models.event import EventStore, Event
 from src.visualization import Annotator
 from src.visualization.zone_renderer import draw_zones, draw_gates, draw_event_ticker
@@ -31,6 +34,8 @@ def analyze_video(
     trail_length: int = 50,
     use_reid: bool = True,
     zone_config: dict | None = None,
+    calibration_config: dict | None = None,
+    capture_evidence: bool = True,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -51,10 +56,15 @@ def analyze_video(
     if zone_config:
         zone_mgr = ZoneManager.from_config(zone_config)
 
+    calibrator = Calibrator()
+    if calibration_config:
+        calibrator = Calibrator.from_config(calibration_config)
+
     gate_counter = GateCounter()
     dwell_tracker = DwellTracker()
     event_detector = EventDetector()
     abandoned_detector = AbandonedDetector(stationary_threshold_frames=track_buffer)
+    interaction_model = InteractionModel()
 
     output_video_path = str(output_dir / "output_tracking.mp4")
     annotator = Annotator(
@@ -64,10 +74,18 @@ def analyze_video(
         height=loader.height,
     )
 
+    evidence = None
+    if capture_evidence:
+        evidence = EvidenceCapture(
+            str(output_dir),
+            fps=loader.fps,
+            width=loader.width,
+            height=loader.height,
+        )
+
     total_frames = min(loader.frame_count, max_frames) if max_frames else loader.frame_count
     pbar = tqdm(total=total_frames, desc="Processing video")
 
-    # Track which zones each object is currently inside
     _zone_state: dict[int, set[str]] = {}
 
     for i, frame in enumerate(loader):
@@ -78,60 +96,67 @@ def analyze_video(
         tracks = tracker.update(detections, frame)
         history.update(tracks, i)
 
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        if evidence:
+            evidence.add_frame(frame_bgr)
+
         for t in tracks:
             cx = (t.bbox[0] + t.bbox[2]) // 2
             cy = (t.bbox[1] + t.bbox[3]) // 2
 
-            # Zone entry/exit
             current_zones = set(z.name for z in zone_mgr.zones_at(cx, cy))
             prev_zones = _zone_state.get(t.id, set())
 
             for zn in current_zones - prev_zones:
-                events.add(event_detector.check_zone_entry(t.id, t.class_name, zn, cx, cy))
+                ev = event_detector.check_zone_entry(t.id, t.class_name, zn, cx, cy)
+                events.add(ev)
+                if evidence:
+                    evidence.capture_for_event("zone_entry", t.id, {"zone": zn, "class": t.class_name})
             for zn in prev_zones - current_zones:
                 dwell_s = dwell_tracker.current_dwell(t.id, zn, i, loader.fps)
-                events.add(event_detector.check_zone_exit(t.id, t.class_name, zn, dwell_s, cx, cy))
+                ev = event_detector.check_zone_exit(t.id, t.class_name, zn, dwell_s, cx, cy)
+                events.add(ev)
 
             for zn in current_zones:
                 dwell_tracker.update(t.id, zn, i, True)
                 dwell_s = dwell_tracker.current_dwell(t.id, zn, i, loader.fps)
                 loiter_ev = event_detector.check_loitering(t.id, t.class_name, zn, dwell_s, i, cx, cy)
                 if loiter_ev:
+                    loiter_ev.confidence = min(dwell_s / 1200.0, 1.0)
                     events.add(loiter_ev)
+                    if evidence:
+                        evidence.capture_for_event("loitering", t.id, {"zone": zn, "duration": dwell_s})
             for zn in prev_zones - current_zones:
                 dwell_tracker.update(t.id, zn, i, False)
 
             _zone_state[t.id] = current_zones
 
-            # Gate crossing
             for gate_name, direction in zone_mgr.check_gate_crossing(t.id, cx, cy):
                 gate_counter.record(gate_name, t.id, direction)
-                if direction == "entering":
-                    events.add(Event(
-                        event_type="gate_crossing",
-                        track_id=t.id,
-                        class_name=t.class_name,
-                        zone=gate_name,
-                        location=[cx, cy],
-                        message=f"{t.class_name} ID {t.id} entered via {gate_name}",
-                    ))
-                else:
-                    events.add(Event(
-                        event_type="gate_crossing",
-                        track_id=t.id,
-                        class_name=t.class_name,
-                        zone=gate_name,
-                        location=[cx, cy],
-                        message=f"{t.class_name} ID {t.id} exited via {gate_name}",
-                    ))
+                ev = Event(
+                    event_type="gate_crossing",
+                    track_id=t.id,
+                    class_name=t.class_name,
+                    zone=gate_name,
+                    location=[cx, cy],
+                    message=f"{t.class_name} ID {t.id} {'entered' if direction == 'entering' else 'exited'} via {gate_name}",
+                )
+                events.add(ev)
 
-            # Abandoned object detection
             if t.class_name != "person":
                 ab_ev = abandoned_detector.update(t.id, t.class_name, t.bbox, i, tracks)
                 if ab_ev:
+                    ab_ev.severity = "high"
                     events.add(ab_ev)
+                    if evidence:
+                        evidence.capture_for_event("abandoned_object", t.id, {"class": t.class_name, "duration": ab_ev.duration})
 
-        # Render frame
+        # Interaction model
+        interaction_events = interaction_model.update(tracks, i)
+        for iev in interaction_events:
+            events.add(iev)
+
+        # Render
         annotated = annotator.draw_tracks(frame, tracks, history, trail_length=trail_length)
         annotated_bgr = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
 
@@ -165,7 +190,12 @@ def analyze_video(
     all_detection_count = sum(len(o["path"]) for o in objects_export)
 
     for obj in objects_export:
-        obj["movement"] = movement_stats(obj.get("path", []))
+        stats = movement_stats(obj.get("path", []))
+        if calibrator.is_calibrated:
+            path = obj.get("path", [])
+            stats["distance_meters"] = calibrator.path_length_in_world(path)
+            stats["speed_mps"] = calibrator.speed_in_world(path, loader.fps)
+        obj["movement"] = stats
 
     result = {
         "video": str(Path(video_path).name),
@@ -179,10 +209,14 @@ def analyze_video(
         "objects": objects_export,
         "output_video": output_video_path,
         "zones": zone_mgr.get_config(),
+        "calibration": calibrator.get_config(),
         "gate_counts": gate_counter.summary(),
         "dwell_summary": dwell_tracker.summary(),
         "events": events.export(),
     }
+
+    if evidence:
+        result["evidence_clips"] = evidence.list_captures()
 
     import json
     analytics_path = output_dir / "analytics.json"
@@ -206,6 +240,10 @@ def analyze_video(
         summary_lines.append(f"  {cls}: {count}")
     summary_lines.append(f"")
 
+    if calibrator.is_calibrated:
+        summary_lines.append(f"Calibration: Active (world coordinates enabled)")
+        summary_lines.append(f"")
+
     if zone_mgr.zones:
         summary_lines.append(f"Zone Config:")
         for z in zone_mgr.zones:
@@ -218,9 +256,17 @@ def analyze_video(
             summary_lines.append(f"  {gname}: +{counts['entries']}  -{counts['exits']}  (net {counts['net']:+d})")
         summary_lines.append(f"")
 
+    critical_events = events.critical()
+    high_events = events.by_severity("high")
+    if critical_events or high_events:
+        summary_lines.append(f"High-Severity Events:")
+        for ev in (critical_events + high_events):
+            summary_lines.append(f"  [{ev.severity.upper()}] {ev.message}")
+        summary_lines.append(f"")
+
     if events.all():
         summary_lines.append(f"Events ({len(events.all())} total):")
-        for ev in events.all()[-10:]:
+        for ev in events.all()[-15:]:
             summary_lines.append(f"  [{ev.event_type}] {ev.message}")
         summary_lines.append(f"")
 
