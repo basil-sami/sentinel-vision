@@ -52,6 +52,7 @@ def analyze_video(
     use_cmc: bool = False,
     reid_refresh_interval: int = 50,
     reid_new_track_frames: int = 3,
+    detector: "YOLODetector | None" = None,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -65,13 +66,14 @@ def analyze_video(
     loader = VideoLoader(video_path)
     log.info("Video: %d frames, %.2f fps, %dx%d",
              loader.frame_count, loader.fps, loader.width, loader.height)
-    detector = YOLODetector(
-        model_family=model_family,
-        model_size=model_size,
-        device=device,
-        target_classes=target_classes,
-        use_tensorrt=use_tensorrt,
-    )
+    if detector is None:
+        detector = YOLODetector(
+            model_family=model_family,
+            model_size=model_size,
+            device=device,
+            target_classes=target_classes,
+            use_tensorrt=use_tensorrt,
+        )
     tracker = Tracker(
         track_thresh=track_thresh,
         track_low_thresh=track_low_thresh,

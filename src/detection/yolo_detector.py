@@ -111,6 +111,9 @@ MODEL_FAMILIES = {
 }
 
 
+_detector_cache: dict[str, "YOLODetector"] = {}
+
+
 class YOLODetector:
     def __init__(
         self,
@@ -144,6 +147,55 @@ class YOLODetector:
         family = MODEL_FAMILIES.get(model_family, MODEL_FAMILIES["yolo11"])
         model_name = family.get(model_size, "yolo11n.pt")
         self.model = YOLO(model_name)
+
+    @classmethod
+    def shared(
+        cls,
+        model_family: str = "yolo11",
+        model_size: str = "nano",
+        device: str = "cpu",
+        target_classes: dict[int, str] | None = None,
+        use_tensorrt: bool = False,
+        tensorrt_half: bool = True,
+    ) -> "YOLODetector":
+        key = f"{model_family}:{model_size}:{device}:{use_tensorrt}"
+        if key not in _detector_cache:
+            _detector_cache[key] = cls(
+                model_family=model_family,
+                model_size=model_size,
+                device=device,
+                target_classes=target_classes,
+                use_tensorrt=use_tensorrt,
+                tensorrt_half=tensorrt_half,
+            )
+        return _detector_cache[key]
+
+    def detect_batch(self, images: list[np.ndarray], conf_threshold: float = 0.5) -> list[list[Detection]]:
+        results = self.model.predict(
+            images,
+            conf=conf_threshold,
+            device=self.device,
+            verbose=False,
+        )
+        batch_detections = []
+        for result in results:
+            detections = []
+            for box in result.boxes:
+                class_id = int(box.cls[0])
+                if class_id not in self.target_classes:
+                    continue
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                confidence = float(box.conf[0])
+                detections.append(
+                    Detection(
+                        class_id=class_id,
+                        class_name=self.target_classes[class_id],
+                        confidence=confidence,
+                        bbox=(x1, y1, x2, y2),
+                    )
+                )
+            batch_detections.append(detections)
+        return batch_detections
 
     def detect(self, image: np.ndarray, conf_threshold: float = 0.5) -> list[Detection]:
         results = self.model.predict(
