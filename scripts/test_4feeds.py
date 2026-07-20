@@ -37,7 +37,6 @@ for name, rel_path in TEST_VIDEOS.items():
         "model_size": "nano",
         "conf_threshold": 0.4,
         "device": "cpu",
-        "max_frames": 200,
         "zone_config": zone_config,
         "calibration_config": calib_config,
         "capture_evidence": True,
