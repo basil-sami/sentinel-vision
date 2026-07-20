@@ -139,6 +139,7 @@ class Tracker:
         use_reid: bool = True,
         reid_model: str = "x1_0",
         device: str = "cpu",
+        use_cmc: bool = False,
     ):
         self._class_map = COCO_CLASSES
         self._device = device
@@ -155,6 +156,7 @@ class Tracker:
                 track_buffer=track_buffer,
                 match_thresh=match_thresh,
                 with_reid=True,
+                use_cmc=use_cmc,
             )
         else:
             self.tracker = ByteTrack(

@@ -49,6 +49,7 @@ def analyze_video(
     use_tensorrt: bool = False,
     log_level: int = logging.WARNING,
     plate_read_interval: int = 10,
+    use_cmc: bool = False,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -77,6 +78,7 @@ def analyze_video(
         use_reid=use_reid,
         reid_model=reid_model,
         device=device,
+        use_cmc=use_cmc,
     )
     history = ObjectHistory()
     events = EventStore()
