@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 import cv2
 from tqdm import tqdm
@@ -46,11 +47,20 @@ def analyze_video(
     min_move_distance: float = 20.0,
     target_classes: dict[int, str] | None = None,
     use_tensorrt: bool = False,
+    log_level: int = logging.WARNING,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    log = logging.getLogger(f"pipeline.{Path(video_path).stem}")
+    log.setLevel(log_level)
+    log.info("=== Pipeline start ===")
+    log.info("video=%s  model=%s/%s  device=%s  tensorrt=%s  max_frames=%s",
+             video_path, model_family, model_size, device, use_tensorrt, max_frames)
+
     loader = VideoLoader(video_path)
+    log.info("Video: %d frames, %.2f fps, %dx%d",
+             loader.frame_count, loader.fps, loader.width, loader.height)
     detector = YOLODetector(
         model_family=model_family,
         model_size=model_size,
@@ -110,11 +120,19 @@ def analyze_video(
 
     for i, frame in enumerate(loader):
         if max_frames and i >= max_frames:
+            log.info("Reached max_frames=%d, stopping", max_frames)
             break
 
         detections = detector.detect(frame, conf_threshold=conf_threshold)
         tracks = tracker.update(detections, frame)
         history.update(tracks, i)
+
+        if i == 0:
+            log.info("Frame 0: %d detections, %d tracks", len(detections), len(tracks))
+        if len(detections) > 0 and i % 50 == 0:
+            classes = [d.class_name for d in detections[:5]]
+            log.debug("Frame %d: %d detections [%s], %d tracks",
+                      i, len(detections), ",".join(classes[:3]), len(tracks))
 
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         if evidence:
@@ -209,14 +227,20 @@ def analyze_video(
     annotator.release()
     loader.release()
 
+    log.info("Frames processed: %d", i + 1)
+    log.info("Raw tracks: %d", len(history.export()))
+
     objects_export = history.export()
 
     if use_reid and objects_export:
+        log.info("Merging fragments...")
         objects_export = merge_fragments(
             objects_export, track_buffer=track_buffer
         )
+        log.info("After merge: %d tracks", len(objects_export))
 
     if filter_stationary_objects and objects_export:
+        log.info("Filtering stationary (min_move=%.1f)...", min_move_distance)
         objects_export = filter_stationary(
             objects_export,
             min_path_distance=min_move_distance,
@@ -331,5 +355,8 @@ def analyze_video(
     summary_lines.append(f"JSON report: {analytics_path}")
     summary_path.write_text("\n".join(summary_lines))
 
+    log.info("=== Pipeline complete ===")
+    log.info("Final: %d tracks, %d detections, %d events, %s",
+             total_tracked, all_detection_count, len(events.all()), output_video_path)
     print(f"\nSummary written to {summary_path}")
     return result

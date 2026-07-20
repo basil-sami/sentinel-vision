@@ -1,4 +1,5 @@
 import json
+import logging
 import signal
 import sys
 import time
@@ -36,20 +37,37 @@ class CameraWorker(Process):
         "track_buffer", "trail_length", "use_reid", "reid_model",
         "zone_config", "calibration_config", "capture_evidence",
         "filter_stationary_objects", "min_move_distance",
-        "target_classes", "use_tensorrt",
+        "target_classes", "use_tensorrt", "log_level",
     }
 
     def run(self):
         from src.pipeline import analyze_video
+        from src.logging_setup import setup_logging
+
+        log = setup_logging(
+            f"cam{self._cam_id}",
+            log_dir=self._output_dir,
+            level=logging.DEBUG,
+            console=False,
+        )
+        log.info("=== CameraWorker %d start ===", self._cam_id)
+        log.info("video=%s  output=%s", self._video_path, self._output_dir)
+        log.info("kwargs=%s", {k: v for k, v in self._pipeline_kwargs.items()
+                                if k in self.VALID_PARAMS})
 
         try:
             kwargs = {k: v for k, v in self._pipeline_kwargs.items()
                       if k in self.VALID_PARAMS}
+            kwargs["log_level"] = logging.DEBUG
             result = analyze_video(
                 video_path=self._video_path,
                 output_dir=self._output_dir,
                 **kwargs,
             )
+            log.info("Result: %d tracks, %d events, %d frames",
+                     result["total_objects_tracked"],
+                     len(result["events"]),
+                     result.get("total_frames_processed", 0))
             payload = {
                 "tracks": result["total_objects_tracked"],
                 "detections": result["total_detections"],
@@ -64,13 +82,17 @@ class CameraWorker(Process):
             }
         except Exception as e:
             import traceback
+            tb = traceback.format_exc()
+            log.error("CameraWorker %d FAILED: %s", self._cam_id, e)
+            for line in tb.strip().split("\n")[-10:]:
+                log.error("  %s", line)
             payload = {
                 "tracks": 0, "detections": 0, "events": 0, "frames": 0,
                 "object_counts": {},
                 "vehicles": {}, "scene_events": {}, "gate_counts": {},
                 "output_video": "",
                 "error": f"{type(e).__name__}: {e}",
-                "traceback": traceback.format_exc(),
+                "traceback": tb,
             }
 
         self._event_queue.put({
