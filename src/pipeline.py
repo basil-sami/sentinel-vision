@@ -48,6 +48,7 @@ def analyze_video(
     target_classes: dict[int, str] | None = None,
     use_tensorrt: bool = False,
     log_level: int = logging.WARNING,
+    plate_read_interval: int = 10,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -93,7 +94,7 @@ def analyze_video(
     event_detector = EventDetector()
     abandoned_detector = AbandonedDetector(stationary_threshold_frames=track_buffer)
     interaction_model = InteractionModel()
-    vehicle_analyzer = VehicleAnalyzer()
+    vehicle_analyzer = VehicleAnalyzer(plate_read_interval=plate_read_interval)
     scene_analyzer = SceneAnalyzer()
 
     output_video_path = str(output_dir / "output_tracking.mp4")

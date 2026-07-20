@@ -29,7 +29,7 @@ class _PlateRead:
 
 
 class VehicleAnalyzer:
-    def __init__(self, parking_timeout_sec: float = 300.0):
+    def __init__(self, parking_timeout_sec: float = 300.0, plate_read_interval: int = 10):
         self._plate_detector = PlateDetector()
         self._plate_reader = PlateReader()
         self._registry = VehicleRegistry(parking_timeout_sec=parking_timeout_sec)
@@ -37,6 +37,8 @@ class VehicleAnalyzer:
         self._stationary_start: dict[int, int] = {}
         self._reported_plates: set[int] = set()
         self._plate_buffer: dict[int, list[_PlateRead]] = defaultdict(list)
+        self._plate_read_interval = plate_read_interval
+        self._last_read_frame: dict[int, int] = {}
 
     def process_frame(
         self,
@@ -61,21 +63,24 @@ class VehicleAnalyzer:
 
             plate_text = ""
             plate_conf = 0.0
-            plate_result = self._plate_detector.detect(frame, t.bbox)
-            if plate_result:
-                crop = frame[
-                    plate_result["bbox"][1]:plate_result["bbox"][3],
-                    plate_result["bbox"][0]:plate_result["bbox"][2],
-                ]
-                if crop.size > 0:
-                    read_result = self._plate_reader.read(crop)
-                    plate_text = read_result.get("plate", "")
-                    plate_conf = read_result.get("confidence", 0.0)
+            last_read = self._last_read_frame.get(t.id, -1)
+            if frame_index - last_read >= self._plate_read_interval:
+                self._last_read_frame[t.id] = frame_index
+                plate_result = self._plate_detector.detect(frame, t.bbox)
+                if plate_result:
+                    crop = frame[
+                        plate_result["bbox"][1]:plate_result["bbox"][3],
+                        plate_result["bbox"][0]:plate_result["bbox"][2],
+                    ]
+                    if crop.size > 0:
+                        read_result = self._plate_reader.read(crop)
+                        plate_text = read_result.get("plate", "")
+                        plate_conf = read_result.get("confidence", 0.0)
 
-                    if plate_text and plate_conf > 0:
-                        self._plate_buffer[t.id].append(
-                            _PlateRead(plate=plate_text, confidence=plate_conf, frame=frame_index)
-                        )
+                        if plate_text and plate_conf > 0:
+                            self._plate_buffer[t.id].append(
+                                _PlateRead(plate=plate_text, confidence=plate_conf, frame=frame_index)
+                            )
 
             fused_plate, fused_conf = self._fuse_plate(t.id, frame_index)
             if fused_plate and t.id not in self._reported_plates:
