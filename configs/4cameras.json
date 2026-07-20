@@ -1,0 +1,36 @@
+{
+    "cameras": [
+        {
+            "id": 0,
+            "name": "cam00_original",
+            "source": "test_videos/cam00_original.mp4",
+            "fps": 25,
+            "location": {"site": "test_lab", "zone": "reference"},
+            "topology": {"neighbors": ["cam01_mirror_slow"], "travel_time_sec": 0}
+        },
+        {
+            "id": 1,
+            "name": "cam01_mirror_slow",
+            "source": "test_videos/cam01_mirror_slow.mp4",
+            "fps": 25,
+            "location": {"site": "test_lab", "zone": "mirror_slow"},
+            "topology": {"neighbors": ["cam00_original", "cam02_mirror_reverse"], "travel_time_sec": 0}
+        },
+        {
+            "id": 2,
+            "name": "cam02_mirror_reverse",
+            "source": "test_videos/cam02_mirror_reverse.mp4",
+            "fps": 25,
+            "location": {"site": "test_lab", "zone": "mirror_reverse"},
+            "topology": {"neighbors": ["cam01_mirror_slow", "cam03_slow_reverse"], "travel_time_sec": 0}
+        },
+        {
+            "id": 3,
+            "name": "cam03_slow_reverse",
+            "source": "test_videos/cam03_slow_reverse.mp4",
+            "fps": 25,
+            "location": {"site": "test_lab", "zone": "slow_reverse"},
+            "topology": {"neighbors": ["cam02_mirror_reverse"], "travel_time_sec": 0}
+        }
+    ]
+}
