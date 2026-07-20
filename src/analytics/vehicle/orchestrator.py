@@ -58,13 +58,42 @@ class VehicleAnalyzer:
             cx = (t.bbox[0] + t.bbox[2]) // 2
             cy = (t.bbox[1] + t.bbox[3]) // 2
 
-            color_info = extract_vehicle_color(frame, t.bbox)
-            size_class = vehicle_size_class(t.bbox)
+            # Color — cache on track attributes (compute once per track)
+            if "color" not in t.attributes:
+                color_info = extract_vehicle_color(frame, t.bbox)
+                t.attributes["color"] = color_info
+            else:
+                color_info = t.attributes["color"]
 
+            # Size class — cache on track attributes
+            if "size_class" not in t.attributes:
+                t.attributes["size_class"] = vehicle_size_class(t.bbox)
+            size_class = t.attributes["size_class"]
+
+            # Plate — confidence-based scheduler
             plate_text = ""
             plate_conf = 0.0
-            last_read = self._last_read_frame.get(t.id, -1)
-            if frame_index - last_read >= self._plate_read_interval:
+            existing_plate = t.attributes.get("plate", {})
+            existing_conf = existing_plate.get("confidence", 0.0) if isinstance(existing_plate, dict) else 0.0
+
+            should_read = False
+            if not existing_plate or not existing_plate.get("plate"):
+                # No plate yet — read at plate_read_interval
+                last_read = self._last_read_frame.get(t.id, -1)
+                if frame_index - last_read >= self._plate_read_interval:
+                    should_read = True
+            elif existing_conf < 0.5:
+                # Low confidence — read more frequently
+                last_read = self._last_read_frame.get(t.id, -1)
+                if frame_index - last_read >= max(self._plate_read_interval // 2, 1):
+                    should_read = True
+            else:
+                # High confidence — read sparingly
+                last_read = self._last_read_frame.get(t.id, -1)
+                if frame_index - last_read >= self._plate_read_interval * 10:
+                    should_read = True
+
+            if should_read:
                 self._last_read_frame[t.id] = frame_index
                 plate_result = self._plate_detector.detect(frame, t.bbox)
                 if plate_result:
@@ -81,6 +110,7 @@ class VehicleAnalyzer:
                             self._plate_buffer[t.id].append(
                                 _PlateRead(plate=plate_text, confidence=plate_conf, frame=frame_index)
                             )
+                            t.attributes["plate"] = {"plate": plate_text, "confidence": plate_conf}
 
             fused_plate, fused_conf = self._fuse_plate(t.id, frame_index)
             if fused_plate and t.id not in self._reported_plates:
@@ -89,7 +119,7 @@ class VehicleAnalyzer:
 
             rec = self._registry.register(
                 track_id=t.id,
-                plate=fused_plate or plate_text,
+                plate=fused_plate or plate_text or (existing_plate.get("plate", "") if isinstance(existing_plate, dict) else ""),
                 color=color_info["color"],
                 vehicle_type=t.class_name,
                 size_class=size_class,

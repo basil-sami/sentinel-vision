@@ -50,6 +50,8 @@ def analyze_video(
     log_level: int = logging.WARNING,
     plate_read_interval: int = 10,
     use_cmc: bool = False,
+    reid_refresh_interval: int = 50,
+    reid_new_track_frames: int = 3,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +81,8 @@ def analyze_video(
         reid_model=reid_model,
         device=device,
         use_cmc=use_cmc,
+        reid_refresh_interval=reid_refresh_interval,
+        reid_new_track_frames=reid_new_track_frames,
     )
     history = ObjectHistory()
     events = EventStore()
@@ -127,7 +131,7 @@ def analyze_video(
             break
 
         detections = detector.detect(frame, conf_threshold=conf_threshold)
-        tracks = tracker.update(detections, frame)
+        tracks = tracker.update(detections, frame, frame_index=i)
         history.update(tracks, i)
 
         if i == 0:
