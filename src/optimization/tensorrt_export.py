@@ -1,9 +1,6 @@
 from pathlib import Path
 
 
-_HALF_SUFFIX = "_half"
-
-
 def _model_name_key(model_family: str, model_size: str) -> str:
     model_names = {
         "yolo11": {"nano": "yolo11n", "small": "yolo11s", "medium": "yolo11m", "large": "yolo11l", "xlarge": "yolo11x"},
@@ -15,8 +12,7 @@ def _model_name_key(model_family: str, model_size: str) -> str:
 
 def engine_path(model_family: str, model_size: str, half: bool = True) -> str:
     name = _model_name_key(model_family, model_size)
-    suffix = _HALF_SUFFIX if half else ""
-    return f"{name}{suffix}.engine"
+    return f"{name}.engine"
 
 
 def pt_path(model_family: str, model_size: str) -> str:
