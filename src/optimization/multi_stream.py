@@ -2,7 +2,11 @@ import json
 import signal
 import sys
 import time
-from multiprocessing import Process, Queue, Event as MP_Event
+import multiprocessing as mp
+from multiprocessing import Queue, Event as MP_Event
+
+# Use spawn so each child gets its own CUDA context (fork breaks CUDA)
+Process = mp.get_context("spawn").Process
 from pathlib import Path
 
 
