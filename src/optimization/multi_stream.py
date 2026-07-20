@@ -64,9 +64,17 @@ class MultiCameraPipeline:
         original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
         self._workers = []
 
+        ANALYZE_VIDEO_PARAMS = {
+            "model_family", "model_size", "conf_threshold", "device",
+            "max_frames", "track_thresh", "match_thresh", "track_low_thresh",
+            "track_buffer", "trail_length", "use_reid", "reid_model",
+            "zone_config", "calibration_config", "capture_evidence",
+            "filter_stationary_objects", "min_move_distance",
+            "target_classes", "use_tensorrt",
+        }
         for i, cfg in enumerate(self._camera_configs):
             pipe_kwargs = {k: v for k, v in cfg.items()
-                           if k not in ("video_path", "output_dir")}
+                           if k in ANALYZE_VIDEO_PARAMS}
             w = CameraWorker(
                 camera_id=i,
                 video_path=cfg["video_path"],
