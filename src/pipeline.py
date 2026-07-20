@@ -18,6 +18,7 @@ from src.analytics.calibration import Calibrator
 from src.analytics.interaction import InteractionModel
 from src.analytics.evidence import EvidenceCapture
 from src.analytics.vehicle.orchestrator import VehicleAnalyzer
+from src.analytics.scene.orchestrator import SceneAnalyzer
 from src.models.event import EventStore, Event
 from src.visualization import Annotator
 from src.visualization.zone_renderer import draw_zones, draw_gates, draw_event_ticker
@@ -81,6 +82,7 @@ def analyze_video(
     abandoned_detector = AbandonedDetector(stationary_threshold_frames=track_buffer)
     interaction_model = InteractionModel()
     vehicle_analyzer = VehicleAnalyzer()
+    scene_analyzer = SceneAnalyzer()
 
     output_video_path = str(output_dir / "output_tracking.mp4")
     annotator = Annotator(
@@ -177,6 +179,11 @@ def analyze_video(
         for ve in vehicle_events:
             events.add(ve)
 
+        # Scene understanding (carrying, overloaded vehicles)
+        scene_events = scene_analyzer.process_frame(tracks, i, calibrator, zone_mgr)
+        for se in scene_events:
+            events.add(se)
+
         # Render
         annotated = annotator.draw_tracks(frame, tracks, history, trail_length=trail_length)
         annotated_bgr = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
@@ -243,6 +250,10 @@ def analyze_video(
         "events": events.export(),
         "vehicles": vehicle_analyzer.get_registry().summary(),
         "vehicle_list": [v.to_dict() for v in vehicle_analyzer.get_registry().all()],
+        "scene_events": {
+            "person_carrying": len(events.by_type("person_carrying")),
+            "overloaded_vehicle": len(events.by_type("overloaded_vehicle")),
+        },
     }
 
     if evidence:
@@ -292,6 +303,13 @@ def analyze_video(
         summary_lines.append(f"High-Severity Events:")
         for ev in (critical_events + high_events):
             summary_lines.append(f"  [{ev.severity.upper()}] {ev.message}")
+        summary_lines.append(f"")
+
+    scene_events_list = [e for e in events.all() if e.event_type in ("person_carrying", "overloaded_vehicle")]
+    if scene_events_list:
+        summary_lines.append(f"Scene Events ({len(scene_events_list)}):")
+        for ev in scene_events_list:
+            summary_lines.append(f"  [{ev.event_type}] {ev.message}")
         summary_lines.append(f"")
 
     if events.all():

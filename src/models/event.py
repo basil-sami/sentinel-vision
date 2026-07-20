@@ -15,6 +15,8 @@ SEVERITY_MAP = {
     "abandoned_object": "high",
     "crowd_forming": "medium",
     "camera_failure": "critical",
+    "person_carrying": "medium",
+    "overloaded_vehicle": "high",
 }
 
 
