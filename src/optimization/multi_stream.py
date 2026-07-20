@@ -3,10 +3,12 @@ import signal
 import sys
 import time
 import multiprocessing as mp
-from multiprocessing import Queue, Event as MP_Event
 
 # Use spawn so each child gets its own CUDA context (fork breaks CUDA)
-Process = mp.get_context("spawn").Process
+_ctx = mp.get_context("spawn")
+Process = _ctx.Process
+Queue = _ctx.Queue
+Event = _ctx.Event
 from pathlib import Path
 
 
@@ -17,7 +19,7 @@ class CameraWorker(Process):
         video_path: str,
         output_dir: str,
         event_queue: Queue,
-        stop_event: MP_Event,
+        stop_event: Event,
         **pipeline_kwargs,
     ):
         super().__init__()
@@ -73,7 +75,7 @@ class MultiCameraPipeline:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._workers: list[CameraWorker] = []
         self._queue = Queue()
-        self._stop_event = MP_Event()
+        self._stop_event = Event()
 
     def run(self) -> dict:
         original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
