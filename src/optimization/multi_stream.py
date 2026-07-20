@@ -5,10 +5,6 @@ import time
 from multiprocessing import Process, Queue, Event as MP_Event
 from pathlib import Path
 
-import cv2
-import numpy as np
-from tqdm import tqdm
-
 
 class CameraWorker(Process):
     def __init__(
@@ -18,82 +14,40 @@ class CameraWorker(Process):
         output_dir: str,
         event_queue: Queue,
         stop_event: MP_Event,
-        model_family: str = "yolo11",
-        model_size: str = "nano",
-        conf_threshold: float = 0.4,
-        device: str = "cuda",
-        max_frames: int | None = None,
-        use_tensorrt: bool = False,
         **pipeline_kwargs,
     ):
         super().__init__()
         self._cam_id = camera_id
         self._video_path = video_path
-        self._output_dir = Path(output_dir)
+        self._output_dir = output_dir
         self._event_queue = event_queue
         self._stop_event = stop_event
-        self._model_family = model_family
-        self._model_size = model_size
-        self._conf_threshold = conf_threshold
-        self._device = device
-        self._max_frames = max_frames
-        self._use_tensorrt = use_tensorrt
         self._pipeline_kwargs = pipeline_kwargs
 
     def run(self):
-        from src.video import VideoLoader
-        from src.detection import YOLODetector
-        from src.tracking.tracker import Tracker
-        from src.analytics.zones import ZoneManager
-        from src.analytics.events import EventDetector
-        from src.analytics.abandoned import AbandonedDetector
-        from src.models.event import EventStore
+        from src.pipeline import analyze_video
 
-        loader = VideoLoader(self._video_path)
-        detector = YOLODetector(
-            model_family=self._model_family,
-            model_size=self._model_size,
-            device=self._device,
-            use_tensorrt=self._use_tensorrt,
+        result = analyze_video(
+            video_path=self._video_path,
+            output_dir=self._output_dir,
+            **self._pipeline_kwargs,
         )
 
-        def send_event(event_type: str, track_id: int, data: dict):
-            self._event_queue.put({
-                "camera_id": self._cam_id,
-                "event_type": event_type,
-                "track_id": track_id,
-                "timestamp": time.time(),
-                **data,
-            })
-
-        events = EventStore()
-        total_frames = (
-            min(loader.frame_count, self._max_frames)
-            if self._max_frames else loader.frame_count
-        )
-        pbar = tqdm(
-            total=total_frames,
-            desc=f"Camera {self._cam_id}",
-            position=self._cam_id,
-        )
-
-        for i, frame in enumerate(loader):
-            if self._stop_event.is_set():
-                break
-            if self._max_frames and i >= self._max_frames:
-                break
-
-            detections = detector.detect(frame, conf_threshold=self._conf_threshold)
-            pbar.update(1)
-
-        pbar.close()
-        loader.release()
         self._event_queue.put({
             "camera_id": self._cam_id,
             "event_type": "_done",
             "track_id": -1,
             "timestamp": time.time(),
-            "total_frames": total_frames,
+            "result": {
+                "tracks": result["total_objects_tracked"],
+                "detections": result["total_detections"],
+                "events": len(result["events"]),
+                "object_counts": result.get("object_counts", {}),
+                "vehicles": result.get("vehicles", {}),
+                "scene_events": result.get("scene_events", {}),
+                "gate_counts": result.get("gate_counts", {}),
+                "output_video": result.get("output_video", ""),
+            },
         })
 
 
@@ -109,19 +63,17 @@ class MultiCameraPipeline:
     def run(self) -> dict:
         original_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
         self._workers = []
+
         for i, cfg in enumerate(self._camera_configs):
+            pipe_kwargs = {k: v for k, v in cfg.items()
+                           if k not in ("video_path", "output_dir")}
             w = CameraWorker(
                 camera_id=i,
                 video_path=cfg["video_path"],
                 output_dir=str(self._output_dir / f"camera_{i}"),
                 event_queue=self._queue,
                 stop_event=self._stop_event,
-                model_family=cfg.get("model_family", "yolo11"),
-                model_size=cfg.get("model_size", "nano"),
-                conf_threshold=cfg.get("conf_threshold", 0.4),
-                device=cfg.get("device", "cuda"),
-                max_frames=cfg.get("max_frames"),
-                use_tensorrt=cfg.get("use_tensorrt", False),
+                **pipe_kwargs,
             )
             self._workers.append(w)
 
@@ -130,11 +82,12 @@ class MultiCameraPipeline:
         for w in self._workers:
             w.start()
 
-        collected_events = []
+        results = {}
         completed = set()
         total_workers = len(self._workers)
 
         try:
+            from tqdm import tqdm
             with tqdm(total=total_workers, desc="Cameras") as pbar:
                 while len(completed) < total_workers:
                     msg = self._queue.get()
@@ -142,25 +95,26 @@ class MultiCameraPipeline:
                         cam_id = msg["camera_id"]
                         if cam_id not in completed:
                             completed.add(cam_id)
+                            results[f"camera_{cam_id}"] = msg.get("result", {})
                             pbar.update(1)
-                    else:
-                        collected_events.append(msg)
         except KeyboardInterrupt:
             print("\nStopping all cameras...")
         finally:
             self._stop_event.set()
             for w in self._workers:
-                w.join(timeout=5)
+                w.join(timeout=10)
                 if w.is_alive():
                     w.kill()
 
-        result = {
+        report = {
             "total_cameras": total_workers,
             "completed_cameras": len(completed),
-            "events": collected_events,
-            "event_count": len(collected_events),
+            "per_camera": results,
+            "event_count": sum(
+                r.get("events", 0) for r in results.values()
+            ),
         }
         report_path = self._output_dir / "multi_camera_report.json"
-        report_path.write_text(json.dumps(result, indent=2))
+        report_path.write_text(json.dumps(report, indent=2))
         print(f"\nReport: {report_path}")
-        return result
+        return report
