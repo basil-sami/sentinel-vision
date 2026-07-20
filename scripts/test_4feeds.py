@@ -127,3 +127,28 @@ for etype in sorted(all_types):
 report_path = OUTPUT_BASE / "4feeds_report.json"
 report_path.write_text(json.dumps(report, indent=2))
 print(f"\nReport saved: {report_path}")
+
+# --- Generate side-by-side mosaic ---
+print(f"\n{'='*60}")
+print("Generating mosaic...")
+print(f"{'='*60}")
+
+mosaic_inputs = {}
+for cam_name in TEST_VIDEOS:
+    out_vid = str(OUTPUT_BASE / cam_name / "output_tracking.mp4")
+    p = Path(out_vid)
+    if p.exists():
+        mosaic_inputs[cam_name] = out_vid
+        print(f"  Added: {cam_name} ({p.stat().st_size/1e6:.1f}MB)")
+
+if len(mosaic_inputs) == len(TEST_VIDEOS):
+    from src.visualization.mosaic import create_mosaic
+    create_mosaic(
+        mosaic_inputs,
+        output_path=str(OUTPUT_BASE / "mosaic_4feeds.mp4"),
+        layout="2x2",
+        max_frames=None,
+    )
+else:
+    print(f"  Skipping mosaic — only {len(mosaic_inputs)}/{len(TEST_VIDEOS)} outputs found")
+    print(f"  Missing: {set(TEST_VIDEOS.keys()) - set(mosaic_inputs.keys())}")
