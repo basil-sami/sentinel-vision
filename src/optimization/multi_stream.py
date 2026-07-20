@@ -42,29 +42,43 @@ class CameraWorker(Process):
     def run(self):
         from src.pipeline import analyze_video
 
-        kwargs = {k: v for k, v in self._pipeline_kwargs.items()
-                  if k in self.VALID_PARAMS}
-        result = analyze_video(
-            video_path=self._video_path,
-            output_dir=self._output_dir,
-            **kwargs,
-        )
+        try:
+            kwargs = {k: v for k, v in self._pipeline_kwargs.items()
+                      if k in self.VALID_PARAMS}
+            result = analyze_video(
+                video_path=self._video_path,
+                output_dir=self._output_dir,
+                **kwargs,
+            )
+            payload = {
+                "tracks": result["total_objects_tracked"],
+                "detections": result["total_detections"],
+                "events": len(result["events"]),
+                "frames": result.get("total_frames_processed", 0),
+                "object_counts": result.get("object_counts", {}),
+                "vehicles": result.get("vehicles", {}),
+                "scene_events": result.get("scene_events", {}),
+                "gate_counts": result.get("gate_counts", {}),
+                "output_video": result.get("output_video", ""),
+                "error": None,
+            }
+        except Exception as e:
+            import traceback
+            payload = {
+                "tracks": 0, "detections": 0, "events": 0, "frames": 0,
+                "object_counts": {},
+                "vehicles": {}, "scene_events": {}, "gate_counts": {},
+                "output_video": "",
+                "error": f"{type(e).__name__}: {e}",
+                "traceback": traceback.format_exc(),
+            }
 
         self._event_queue.put({
             "camera_id": self._cam_id,
             "event_type": "_done",
             "track_id": -1,
             "timestamp": time.time(),
-            "result": {
-                "tracks": result["total_objects_tracked"],
-                "detections": result["total_detections"],
-                "events": len(result["events"]),
-                "object_counts": result.get("object_counts", {}),
-                "vehicles": result.get("vehicles", {}),
-                "scene_events": result.get("scene_events", {}),
-                "gate_counts": result.get("gate_counts", {}),
-                "output_video": result.get("output_video", ""),
-            },
+            "result": payload,
         })
 
 
@@ -110,10 +124,19 @@ class MultiCameraPipeline:
                     msg = self._queue.get()
                     if msg.get("event_type") == "_done":
                         cam_id = msg["camera_id"]
-                        if cam_id not in completed:
-                            completed.add(cam_id)
-                            results[f"camera_{cam_id}"] = msg.get("result", {})
-                            pbar.update(1)
+                        if cam_id in completed:
+                            continue
+                        completed.add(cam_id)
+                        res = msg.get("result", {})
+                        err = res.get("error")
+                        if err:
+                            print(f"\n  ⚠ camera_{cam_id} ERROR: {err}")
+                            tb = res.get("traceback", "")
+                            if tb:
+                                for line in tb.strip().split("\n")[-3:]:
+                                    print(f"    {line}")
+                        results[f"camera_{cam_id}"] = res
+                        pbar.update(1)
         except KeyboardInterrupt:
             print("\nStopping all cameras...")
         finally:
