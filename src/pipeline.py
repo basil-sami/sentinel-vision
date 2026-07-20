@@ -45,6 +45,7 @@ def analyze_video(
     filter_stationary_objects: bool = True,
     min_move_distance: float = 20.0,
     target_classes: dict[int, str] | None = None,
+    use_tensorrt: bool = False,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -55,6 +56,7 @@ def analyze_video(
         model_size=model_size,
         device=device,
         target_classes=target_classes,
+        use_tensorrt=use_tensorrt,
     )
     tracker = Tracker(
         track_thresh=track_thresh,
