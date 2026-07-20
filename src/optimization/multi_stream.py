@@ -1,14 +1,13 @@
 """Multi-camera pipeline — sequential (single process, shared GPU)."""
 
 import json
-import logging
-import time
 from pathlib import Path
 
 
 def process_cameras(
     camera_configs: list[dict],
     output_dir: str = "outputs",
+    mosaic_layout: str = "2x2",
 ) -> dict:
     """Process N cameras sequentially in a single process (shared GPU context).
 
@@ -77,14 +76,39 @@ def process_cameras(
     report_path = output_dir / "multi_camera_report.json"
     report_path.write_text(json.dumps(report, indent=2))
     print(f"\nReport: {report_path}")
+
+    # Auto-generate mosaic from all successfully processed cameras
+    output_videos = {}
+    for cam_key, cam_res in results.items():
+        vid = cam_res.get("output_video", "")
+        if vid and Path(vid).exists() and cam_res.get("error") is None:
+            idx = int(cam_key.split("_")[-1])
+            cfg = camera_configs[idx] if 0 <= idx < len(camera_configs) else {}
+            label = cfg.get("name", cam_key)
+            output_videos[label] = vid
+
+    if len(output_videos) >= 2:
+        try:
+            from src.visualization.mosaic import create_mosaic
+            mosaic_path = str(output_dir / "mosaic.mp4")
+            create_mosaic(output_videos, mosaic_path, layout=mosaic_layout)
+            report["mosaic"] = mosaic_path
+        except Exception as e:
+            print(f"  Mosaic generation skipped: {e}")
+
     return report
 
 
 # Kept for backward compatibility
 class MultiCameraPipeline:
-    def __init__(self, camera_configs, output_dir="outputs"):
+    def __init__(self, camera_configs, output_dir="outputs", mosaic_layout="2x2"):
         self._camera_configs = camera_configs
         self._output_dir = output_dir
+        self._mosaic_layout = mosaic_layout
 
     def run(self) -> dict:
-        return process_cameras(self._camera_configs, self._output_dir)
+        return process_cameras(
+            self._camera_configs,
+            self._output_dir,
+            mosaic_layout=self._mosaic_layout,
+        )
