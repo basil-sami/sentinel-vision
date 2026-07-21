@@ -273,9 +273,6 @@ def main():
     args = parser.parse_args()
 
     if args.multi:
-        FEEDS = [
-            ("cam00_original", args.video),
-        ]
         # Generate test videos if they don't exist
         import subprocess
         test_dir = Path("test_videos")
@@ -285,15 +282,20 @@ def main():
             ("cam02_mirror_reverse", "hflip,reverse"),
             ("cam03_slow_reverse", "reverse,setpts=2.0*PTS"),
         ]
-        feeds = [(nm, args.video)]  # Start with original
-        for nm, filt in transforms:
-            p = test_dir / f"{nm}.mp4"
+        feeds = []
+
+        def _ensure_video(name: str, filt: str) -> str:
+            p = test_dir / f"{name}.mp4"
             if not p.exists():
-                print(f"Generating {nm}...")
+                print(f"Generating {name}...")
                 subprocess.run(["ffmpeg", "-y", "-i", args.video, "-vf", filt,
                                "-an", "-c:v", "libx264", "-preset", "fast", str(p)],
                                capture_output=True)
-            feeds.append((nm, str(p)))
+            return str(p)
+
+        feeds = [("cam00_original", args.video)]
+        for nm, filt in transforms:
+            feeds.append((nm, _ensure_video(nm, filt)))
 
         cam_configs = [
             {"video_path": vp, "name": nm,
