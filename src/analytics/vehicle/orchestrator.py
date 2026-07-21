@@ -1,5 +1,4 @@
 from collections import defaultdict
-from dataclasses import dataclass, field
 
 from src.analytics.vehicle.plate_detector import PlateDetector
 from src.analytics.vehicle.plate_reader import PlateReader
@@ -12,20 +11,20 @@ from src.analytics.vehicle.events import (
     repeat_visitor_event,
     SPEEDING_THRESHOLD_MPS,
 )
+from src.analytics.vehicle.attribute_cache import AttributeManager, AttributeState, MAX_PLATE_ATTEMPTS, COLOR_CONSISTENT_NEEDED
+from src.analytics.vehicle.candidate_buffer import TopKBuffer
 from src.models.event import Event
 
 
 VEHICLE_CLASSES = {"car", "truck", "bus", "motorcycle"}
 
+
 TEMPORAL_FUSION_FRAMES = 10
 TEMP_FUSION_MIN_CONF = 0.3
 
-
-@dataclass
-class _PlateRead:
-    plate: str
-    confidence: float
-    frame: int
+TOP_K_PLATES = 5
+PLATE_HIGH_QUALITY_THRESHOLD = 0.85
+OCR_FRAME_INTERVAL = 20
 
 
 class VehicleAnalyzer:
@@ -33,20 +32,20 @@ class VehicleAnalyzer:
         self._plate_detector = PlateDetector()
         self._plate_reader = PlateReader()
         self._registry = VehicleRegistry(parking_timeout_sec=parking_timeout_sec)
+        self._attrs = AttributeManager()
+        self._buffers: dict[int, TopKBuffer] = {}
         self._last_positions: dict[int, tuple[int, int]] = {}
         self._stationary_start: dict[int, int] = {}
+        self._plate_buffer: dict[int, list] = defaultdict(list)
         self._reported_plates: set[int] = set()
-        self._plate_buffer: dict[int, list[_PlateRead]] = defaultdict(list)
-        self._plate_read_interval = plate_read_interval
         self._last_read_frame: dict[int, int] = {}
 
-    def process_frame(
-        self,
-        frame,
-        tracks: list,
-        frame_index: int,
-        calibrator,
-    ) -> list[Event]:
+    def _get_buffer(self, track_id: int) -> TopKBuffer:
+        if track_id not in self._buffers:
+            self._buffers[track_id] = TopKBuffer(k=TOP_K_PLATES)
+        return self._buffers[track_id]
+
+    def process_frame(self, frame, tracks: list, frame_index: int, calibrator) -> list[Event]:
         events = []
         seen_tracks = set()
 
@@ -54,77 +53,84 @@ class VehicleAnalyzer:
             if t.class_name not in VEHICLE_CLASSES:
                 continue
             seen_tracks.add(t.id)
+            attrs = self._attrs.get(t.id)
 
             cx = (t.bbox[0] + t.bbox[2]) // 2
             cy = (t.bbox[1] + t.bbox[3]) // 2
 
-            # Color — cache on track attributes (compute once per track)
-            if "color" not in t.attributes:
+            # --- Color: 3 consistent observations then lock ---
+            if attrs.color.state not in (AttributeState.VERIFIED, AttributeState.LOCKED, AttributeState.FAILED):
                 color_info = extract_vehicle_color(frame, t.bbox)
-                t.attributes["color"] = color_info
-            else:
-                color_info = t.attributes["color"]
+                attrs.color.observations.append(color_info["color"])
+                if len(attrs.color.observations) >= COLOR_CONSISTENT_NEEDED:
+                    recent = attrs.color.observations[-COLOR_CONSISTENT_NEEDED:]
+                    if len(set(recent)) == 1:
+                        attrs.color.value = recent[0]
+                        attrs.color.confidence = color_info["confidence"]
+                        attrs.color.state = AttributeState.LOCKED
+                    else:
+                        attrs.color.state = AttributeState.FAILED
 
-            # Size class — cache on track attributes
-            if "size_class" not in t.attributes:
-                t.attributes["size_class"] = vehicle_size_class(t.bbox)
-            size_class = t.attributes["size_class"]
+            # --- Size class: lock after 5 frames ---
+            if attrs.size_class.state not in (AttributeState.VERIFIED, AttributeState.LOCKED, AttributeState.FAILED):
+                attrs.size_class.observations.append(vehicle_size_class(t.bbox))
+                if len(attrs.size_class.observations) >= 5:
+                    sizes = attrs.size_class.observations
+                    attrs.size_class.value = max(set(sizes), key=sizes.count)
+                    attrs.size_class.state = AttributeState.LOCKED
 
-            # Plate — confidence-based scheduler
-            plate_text = ""
-            plate_conf = 0.0
-            existing_plate = t.attributes.get("plate", {})
-            existing_conf = existing_plate.get("confidence", 0.0) if isinstance(existing_plate, dict) else 0.0
+            color_info = {
+                "color": attrs.color.value or "unknown",
+                "confidence": attrs.color.confidence,
+            }
+            size_class = attrs.size_class.value or vehicle_size_class(t.bbox)
 
-            should_read = False
-            if not existing_plate or not existing_plate.get("plate"):
-                # No plate yet — read at plate_read_interval
+            # --- Plate: collect top-K candidates, OCR only when needed ---
+            plate_state = attrs.plate.state
+            if plate_state not in (AttributeState.VERIFIED, AttributeState.LOCKED, AttributeState.FAILED):
+                buffer = self._get_buffer(t.id)
                 last_read = self._last_read_frame.get(t.id, -1)
-                if frame_index - last_read >= self._plate_read_interval:
-                    should_read = True
-            elif existing_conf < 0.5:
-                # Low confidence — read more frequently
-                last_read = self._last_read_frame.get(t.id, -1)
-                if frame_index - last_read >= max(self._plate_read_interval // 2, 1):
-                    should_read = True
-            else:
-                # High confidence — read sparingly
-                last_read = self._last_read_frame.get(t.id, -1)
-                if frame_index - last_read >= self._plate_read_interval * 10:
-                    should_read = True
 
-            if should_read:
-                self._last_read_frame[t.id] = frame_index
-                plate_result = self._plate_detector.detect(frame, t.bbox)
-                if plate_result:
-                    crop = frame[
-                        plate_result["bbox"][1]:plate_result["bbox"][3],
-                        plate_result["bbox"][0]:plate_result["bbox"][2],
-                    ]
-                    if crop.size > 0:
-                        read_result = self._plate_reader.read(crop)
-                        plate_text = read_result.get("plate", "")
-                        plate_conf = read_result.get("confidence", 0.0)
+                should_detect = False
+                if plate_state == AttributeState.UNKNOWN and frame_index - last_read >= OCR_FRAME_INTERVAL:
+                    should_detect = True
+                elif plate_state == AttributeState.PROCESSING and attrs.plate.attempts < MAX_PLATE_ATTEMPTS:
+                    if frame_index - last_read >= OCR_FRAME_INTERVAL:
+                        should_detect = True
 
-                        if plate_text and plate_conf > 0:
-                            self._plate_buffer[t.id].append(
-                                _PlateRead(plate=plate_text, confidence=plate_conf, frame=frame_index)
+                if should_detect:
+                    self._last_read_frame[t.id] = frame_index
+                    attrs.plate.attempts += 1
+                    if attrs.plate.state == AttributeState.UNKNOWN:
+                        attrs.plate.state = AttributeState.PROCESSING
+
+                    plate_result = self._plate_detector.detect(frame, t.bbox)
+                    if plate_result:
+                        crop = frame[
+                            plate_result["bbox"][1]:plate_result["bbox"][3],
+                            plate_result["bbox"][0]:plate_result["bbox"][2],
+                        ]
+                        if crop.size > 0:
+                            buffer.evaluate_and_add(
+                                plate_crop=crop,
+                                vehicle_crop=frame[t.bbox[1]:t.bbox[3], t.bbox[0]:t.bbox[2]],
+                                plate_bbox=plate_result["bbox"],
+                                detection_conf=plate_result.get("confidence", 0.5),
+                                frame_index=frame_index,
+                                frame_area=frame.shape[0] * frame.shape[1],
                             )
-                            t.attributes["plate"] = {"plate": plate_text, "confidence": plate_conf}
 
-            fused_plate, fused_conf = self._fuse_plate(t.id, frame_index)
-            if fused_plate and t.id not in self._reported_plates:
-                self._reported_plates.add(t.id)
-                events.append(plate_read_event(t.id, fused_plate, fused_conf, [cx, cy]))
+                            best = buffer.best()
+                            if best and best.score >= PLATE_HIGH_QUALITY_THRESHOLD:
+                                self._run_ocr(t.id, best, events, [cx, cy])
 
-            rec = self._registry.register(
-                track_id=t.id,
-                plate=fused_plate or plate_text or (existing_plate.get("plate", "") if isinstance(existing_plate, dict) else ""),
-                color=color_info["color"],
-                vehicle_type=t.class_name,
-                size_class=size_class,
-            )
+                if attrs.plate.attempts >= MAX_PLATE_ATTEMPTS and attrs.plate.state != AttributeState.VERIFIED:
+                    if len(buffer) > 0:
+                        self._run_ocr(t.id, buffer.best(), events, [cx, cy])
+                    else:
+                        attrs.plate.state = AttributeState.FAILED
 
+            # --- Speed check ---
             prev_pos = self._last_positions.get(t.id)
             self._last_positions[t.id] = (cx, cy)
 
@@ -136,6 +142,7 @@ class VehicleAnalyzer:
                 if speed > SPEEDING_THRESHOLD_MPS:
                     events.append(speeding_event(t.id, speed, [cx, cy]))
 
+            # --- Stationary / parking ---
             if prev_pos:
                 dx = cx - prev_pos[0]
                 dy = cy - prev_pos[1]
@@ -147,29 +154,80 @@ class VehicleAnalyzer:
                     if duration_frames == 150:
                         self._registry.mark_parking(t.id)
                         events.append(parking_event(
-                            t.id, fused_plate or plate_text, duration_frames / 25.0, [cx, cy]
+                            t.id,
+                            attrs.plate.value or "",
+                            duration_frames / 25.0,
+                            [cx, cy],
                         ))
                 else:
                     if t.id in self._stationary_start:
                         self._registry.mark_departure(t.id)
                     self._stationary_start.pop(t.id, None)
 
+            # --- Update registry ---
+            self._registry.register(
+                track_id=t.id,
+                plate=attrs.plate.value or "",
+                color=color_info["color"],
+                vehicle_type=t.class_name,
+                size_class=size_class,
+            )
+
+        self._attrs.cleanup(seen_tracks)
+        stale_buffers = list(set(self._buffers.keys()) - seen_tracks)
+        for sid in stale_buffers:
+            self._try_final_ocr(sid, events)
+            self._buffers.pop(sid, None)
         self._clean_plate_buffers(seen_tracks)
         return events
 
+    def _run_ocr(self, track_id: int, candidate, events: list, location: list[int, int]):
+        attrs = self._attrs.get(track_id)
+        if candidate is None or candidate.plate_crop is None:
+            attrs.plate.state = AttributeState.FAILED
+            return
+
+        read_result = self._plate_reader.read(candidate.plate_crop)
+        plate_text = read_result.get("plate", "")
+        plate_conf = read_result.get("confidence", 0.0)
+
+        if plate_text and plate_conf > 0:
+            attrs.plate.value = plate_text
+            attrs.plate.confidence = plate_conf
+            attrs.plate.state = AttributeState.LOCKED
+
+            if track_id not in self._reported_plates:
+                self._reported_plates.add(track_id)
+                events.append(plate_read_event(track_id, plate_text, plate_conf, location))
+
+            self._plate_buffer[track_id].append((plate_text, plate_conf))
+        else:
+            if attrs.plate.attempts >= MAX_PLATE_ATTEMPTS:
+                attrs.plate.state = AttributeState.FAILED
+
+    def _try_final_ocr(self, track_id: int, events: list):
+        attrs = self._attrs.get(track_id)
+        if attrs.plate.state in (AttributeState.VERIFIED, AttributeState.LOCKED, AttributeState.FAILED):
+            return
+        buffer = self._buffers.get(track_id)
+        if buffer and len(buffer) > 0:
+            self._run_ocr(track_id, buffer.best(), events, [0, 0])
+        else:
+            attrs.plate.state = AttributeState.FAILED
+
     def _fuse_plate(self, track_id: int, current_frame: int) -> tuple[str, float]:
         reads = self._plate_buffer.get(track_id, [])
-        reads = [r for r in reads if r.confidence >= TEMP_FUSION_MIN_CONF]
+        reads = [r for r in reads if r[1] >= TEMP_FUSION_MIN_CONF]
         if not reads:
             return ("", 0.0)
 
         if len(reads) < 3:
-            best = max(reads, key=lambda r: r.confidence)
-            return (best.plate, best.confidence)
+            best = max(reads, key=lambda r: r[1])
+            return best
 
         freq: dict[str, list[float]] = {}
-        for r in reads:
-            freq.setdefault(r.plate, []).append(r.confidence)
+        for plate, conf in reads:
+            freq.setdefault(plate, []).append(conf)
 
         best_plate = ""
         best_score = 0.0
@@ -188,9 +246,8 @@ class VehicleAnalyzer:
         for tid in stale:
             buf = self._plate_buffer.get(tid, [])
             if buf:
-                most_recent = max(buf, key=lambda r: r.frame)
-                if most_recent.plate:
-                    self._registry.register(tid, most_recent.plate, "", "", "")
+                best = max(buf, key=lambda r: r[1])
+                self._registry.register(tid, best[0], "", "", "")
             del self._plate_buffer[tid]
 
     def get_registry(self) -> VehicleRegistry:
