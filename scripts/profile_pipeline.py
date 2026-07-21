@@ -128,6 +128,7 @@ def profile_video(
         with profiler.timer("detect"):
             detections = detector.detect(frame, conf_threshold=conf_threshold)
         profiler.count("detections", len(detections))
+        profiler.record_detections(len(detections))
 
         # --- Tracking ---
         with profiler.timer("track"):

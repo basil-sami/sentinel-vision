@@ -60,6 +60,7 @@ class PipelineProfiler:
         self.stages: dict[str, StageStats] = defaultdict(StageStats)
         self.counters: dict[str, Counter] = defaultdict(Counter)
         self._frame_times: list[float] = []
+        self._detections_per_frame: list[int] = []
         self._gpu_samples: list[dict] = []
         self._cpu_samples: list[float] = []
         self._sampling = False
@@ -73,6 +74,9 @@ class PipelineProfiler:
 
     def record_frame_time(self, ms: float):
         self._frame_times.append(ms)
+
+    def record_detections(self, count: int):
+        self._detections_per_frame.append(count)
 
     def start_system_sampling(self, interval: float = 0.5):
         """Start background GPU/CPU sampling thread."""
@@ -143,6 +147,15 @@ class PipelineProfiler:
         lines.append(f"\n  {'Total frame time':<23s} {self.avg_frame_ms:>7.1f} ms")
         lines.append(f"  {'Pipeline FPS':<23s} {self.fps:>7.1f}")
         lines.append("")
+
+        # Detections per frame
+        if self._detections_per_frame:
+            avg_det = sum(self._detections_per_frame) / len(self._detections_per_frame)
+            lines.append("--- Detections Per Frame ---")
+            lines.append(f"  Average:           {avg_det:>8.1f}")
+            lines.append(f"  Peak:              {max(self._detections_per_frame):>8d}")
+            lines.append(f"  Total (all frames): {sum(self._detections_per_frame):>8d}")
+            lines.append("")
 
         # Counters
         if self.counters:

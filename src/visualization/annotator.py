@@ -1,4 +1,3 @@
-import subprocess
 import cv2
 import numpy as np
 from pathlib import Path
@@ -21,9 +20,14 @@ class Annotator:
         self.fps = fps
         self.width = width
         self.height = height
-        self.frame_dir = self.output_path.with_suffix("")
-        self.frame_dir.mkdir(parents=True, exist_ok=True)
         self._frame_index = 0
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        self._writer = cv2.VideoWriter(
+            str(self.output_path), fourcc, fps, (width, height),
+        )
+        if not self._writer.isOpened():
+            raise RuntimeError(f"VideoWriter failed: {self.output_path}")
 
     def draw_detections(self, frame: np.ndarray, detections: list, object_id: int | None = None) -> np.ndarray:
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
@@ -75,70 +79,9 @@ class Annotator:
 
     def write_frame(self, frame: np.ndarray):
         frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        frame_path = self.frame_dir / f"{self._frame_index:08d}.png"
-        cv2.imwrite(str(frame_path), frame_bgr)
+        self._writer.write(frame_bgr)
         self._frame_index += 1
 
-    def probe(self, path: Path | None = None) -> dict | None:
-        path = path or self.output_path
-        try:
-            result = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_format", "-show_streams",
-                 "-of", "json", str(path)],
-                capture_output=True, text=True, check=True,
-            )
-            import json
-            info = json.loads(result.stdout)
-            print(f"\n--- Probe: {path.name} ---")
-            if "format" in info:
-                fmt = info["format"]
-                print(f"  Format: {fmt.get('format_name')}  duration: {fmt.get('duration','?')}s")
-            for s in info.get("streams", []):
-                print(f"  Stream #{s['index']}: {s.get('codec_type')}  "
-                      f"codec: {s.get('codec_name')}  "
-                      f"{s.get('width','?')}x{s.get('height','?')}  "
-                      f"fps: {s.get('r_frame_rate','?')}")
-            print("---\n")
-            return info
-        except Exception as e:
-            print(f"  Probe failed: {e}")
-            return None
-
-    def _encode_ffmpeg(self):
-        print(f"Encoding {self._frame_index} frames via ffmpeg...")
-        cmd = [
-            "ffmpeg", "-y",
-            "-framerate", str(self.fps),
-            "-i", str(self.frame_dir / "%08d.png"),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-preset", "fast",
-            "-crf", "23",
-            str(self.output_path),
-        ]
-        subprocess.run(cmd, check=True, capture_output=True)
-
-    def _encode_opencv(self):
-        print(f"Encoding {self._frame_index} frames via OpenCV...")
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(self.output_path), fourcc, self.fps,
-                                 (self.width, self.height))
-        if not writer.isOpened():
-            raise RuntimeError("OpenCV VideoWriter failed to open")
-        for i in range(self._frame_index):
-            frame_path = self.frame_dir / f"{i:08d}.png"
-            frame = cv2.imread(str(frame_path))
-            if frame is not None:
-                writer.write(frame)
-        writer.release()
-
     def release(self):
-        if self._frame_index == 0:
-            return
-        try:
-            self._encode_ffmpeg()
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            self._encode_opencv()
-        self.probe()
-        print(f"Raw frames kept in: {self.frame_dir}/")
+        self._writer.release()
         print(f"Video saved to: {self.output_path}")
