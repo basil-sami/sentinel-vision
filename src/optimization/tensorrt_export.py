@@ -10,9 +10,10 @@ def _model_name_key(model_family: str, model_size: str) -> str:
     return model_names.get(model_family, model_names["yolo11"]).get(model_size, "yolo11n")
 
 
-def engine_path(model_family: str, model_size: str, half: bool = True) -> str:
+def engine_path(model_family: str, model_size: str, half: bool = True, batch_size: int = 1) -> str:
     name = _model_name_key(model_family, model_size)
-    return f"{name}.engine"
+    suffix = f"_b{batch_size}" if batch_size > 1 else ""
+    return f"{name}{suffix}.engine"
 
 
 def pt_path(model_family: str, model_size: str) -> str:
@@ -20,8 +21,8 @@ def pt_path(model_family: str, model_size: str) -> str:
     return f"{name}.pt"
 
 
-def has_engine(model_family: str, model_size: str, half: bool = True) -> bool:
-    return Path(engine_path(model_family, model_size, half)).exists()
+def has_engine(model_family: str, model_size: str, half: bool = True, batch_size: int = 1) -> bool:
+    return Path(engine_path(model_family, model_size, half, batch_size)).exists()
 
 
 def export_to_engine(
@@ -30,8 +31,9 @@ def export_to_engine(
     half: bool = True,
     device: int = 0,
     force: bool = False,
+    batch_size: int = 1,
 ) -> str:
-    export_path = engine_path(model_family, model_size, half)
+    export_path = engine_path(model_family, model_size, half, batch_size)
     if not force and Path(export_path).exists():
         return str(Path(export_path).absolute())
     try:
@@ -41,7 +43,17 @@ def export_to_engine(
 
     pt = pt_path(model_family, model_size)
     model = YOLO(pt)
-    model.export(format="engine", half=half, device=device, verbose=False)
+    export_kwargs = dict(
+        format="engine",
+        half=half,
+        device=device,
+        verbose=False,
+        imgsz=640,
+        workspace=4,
+    )
+    if batch_size > 1:
+        export_kwargs["batch"] = batch_size
+    model.export(**export_kwargs)
     if not Path(export_path).exists():
         found = list(Path(".").glob(f"{_model_name_key(model_family, model_size)}*.engine"))
         if found:
