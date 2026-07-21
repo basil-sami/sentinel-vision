@@ -211,11 +211,16 @@ def test_batch_scale(detector: YOLODetector, frames: list[np.ndarray]):
         batches = [dups[i:i + batch_size] for i in range(0, len(dups), batch_size)]
 
         # Warmup
-        for b in batches[:4]:
-            if len(b) == 1:
-                detector.detect(b[0], conf_threshold=0.4)
-            else:
-                detector.detect_batch(b, conf_threshold=0.4)
+        try:
+            for b in batches[:4]:
+                if len(b) == 1:
+                    detector.detect(b[0], conf_threshold=0.4)
+                else:
+                    detector.detect_batch(b, conf_threshold=0.4)
+        except Exception as e:
+            reason = str(e).split('\n')[0][:80]
+            print(f"\n  batch={batch_size} — SKIPPED: {reason}")
+            continue
 
         t0 = time.perf_counter()
         total_frames = 0
