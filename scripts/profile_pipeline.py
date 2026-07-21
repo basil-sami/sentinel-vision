@@ -319,10 +319,13 @@ def main():
         )
 
     print()
-    print(profiler.report())
+    report_str = profiler.report()
+    print(report_str)
 
-    report_path = Path(args.output) / "performance_report.txt"
-    report_path.write_text(profiler.report())
+    report_dir = Path(args.output + "_multi") if args.multi else Path(args.output)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / "performance_report.txt"
+    report_path.write_text(report_str)
     print(f"Report saved: {report_path}")
 
 
