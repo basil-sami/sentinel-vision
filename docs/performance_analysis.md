@@ -14,13 +14,16 @@ Script: `scripts/benchmark.py`
 | Metric | Value |
 |--------|-------|
 | FPS | **53.7** |
-| GPU util (avg) | **35%** |
-| GPU util (peak) | 88% |
+| GPU util (avg) | **35.0%** |
+| GPU util (peak) | 88.0% |
 | Avg detections/frame | 7.5 |
 
-**Conclusion:** Even with zero pipeline overhead, the GPU is only 35% utilized.
-The T4 + YOLO11x TensorRT combination has low GPU occupancy per inference call.
-Each `detect()` call runs ~18.3ms total but only ~6ms of actual GPU compute.
+**Observation:** Even with zero pipeline overhead, GPU utilization averages 35%.
+Each `detect()` call takes ~18.3ms wall time. The GPU compute portion within that
+call is unknown without CUDA event timing — it may be the full 18.3ms of GPU work
+(just low SM occupancy) or a fraction of it with the rest being CPU postprocessing.
+
+**This is not yet diagnosed.** Test 6 below provides the first clue.
 
 ---
 
@@ -33,9 +36,9 @@ Each `detect()` call runs ~18.3ms total but only ~6ms of actual GPU compute.
 | FPS | 12.7* | **15.2** | +2.5 |
 | Speedup | 1.0x | **1.2x** | |
 
-*Old reference included PNG encode bottleneck
+*Old reference included PNG encode bottleneck, now fixed.
 
-**Conclusion:** Vehicle intelligence adds only ~2 FPS overhead. Not the primary bottleneck.
+**Conclusion:** Vehicle intelligence is not the primary bottleneck.
 
 ---
 
@@ -46,12 +49,12 @@ Each `detect()` call runs ~18.3ms total but only ~6ms of actual GPU compute.
 | Metric | Value |
 |--------|-------|
 | FPS | **52.7** |
-| GPU util (avg) | **80%** |
-| GPU busy ratio | 100% |
+| GPU util (avg) | **80.0%** |
+| GPU busy ratio (Python thread) | 100% |
 
-**Conclusion:** GPU utilization jumps from **35% → 80%** when CPU work runs concurrently.
-The pipeline is serializing CPU postprocessing and GPU inference.
-**Fix: separate CPU postprocessing into a pipeline stage that runs on frame N-1 while the GPU processes frame N.**
+**Conclusion:** GPU utilization jumps from **35% → 80%** when CPU work runs concurrently
+on a separate thread. The GPU is capable of sustained utilization. The current
+serial pipeline is preventing this.
 
 ---
 
@@ -63,12 +66,7 @@ The pipeline is serializing CPU postprocessing and GPU inference.
 | 2 | — | **SKIPPED** — TRT engine batch=1 locked |
 | 4 | — | **SKIPPED** — TRT engine batch=1 locked |
 
-**Conclusion:** TensorRT engine was exported with `max_batch_size=1`.
-Cannot test batched inference without rebuilding the engine.
-
----
-
-### Test 5 — CPU Worker Scaling (not yet run)
+**Action needed:** Rebuild TensorRT engine with dynamic batch (min=1, opt=4, max=8).
 
 ---
 
@@ -76,16 +74,19 @@ Cannot test batched inference without rebuilding the engine.
 
 | Metric | Value |
 |--------|-------|
-| GPU busy time | 1832 ms |
+| GPU busy time (Python perspective) | 1832 ms |
 | Total wall time | 1832 ms |
-| GPU busy ratio | **100%** (Python thread perspective) |
+| GPU busy ratio | **100%** (detect calls are back-to-back) |
 | Avg GPU burst | **18.3 ms** |
-| Avg idle gap | **0.0 ms** (between detect calls) |
+| Avg idle gap between detect calls | **0.0 ms** |
 
-**Conclusion:** From the Python side, `detect()` calls are back-to-back with zero gaps.
-The 35% GPU utilization is **inside** each `detect()` call, not between calls.
-The GPU burst per frame (~6ms compute) is followed by synchronous CPU postprocessing (~12ms)
-before the next frame can be submitted.
+**Important:** The Python thread submits `detect()` calls back-to-back with zero idle
+gaps. The nvidia-smi reading of 35% GPU utilization means the GPU is active 35% of
+the wall-clock time **within** each `detect()` call. The remaining 65% of each
+`detect()` call is CPU work (preprocessing, NMS, box decoding, Python overhead).
+
+This is the key insight: **GPU is executing kernels efficiently but is idle while
+Python processes results between frames.**
 
 ---
 
@@ -98,7 +99,8 @@ before the next frame can be submitted.
 | Full inference round-trip | **17.9 ms** | |
 | Transfer total | **0.58 ms** | **3.3%** |
 
-**Conclusion:** Memory transfer is negligible (3.3%). Not a bottleneck.
+**Conclusion:** Memory transfer is not a bottleneck. Pinned memory, zero-copy,
+and CUDA streams optimizations are unnecessary at this stage.
 
 ---
 
@@ -106,69 +108,112 @@ before the next frame can be submitted.
 
 | # | Hypothesis | Verdict | Evidence |
 |---|-----------|---------|----------|
-| 1 | CPU bottleneck (preprocessing) | **Not primary** | GPU-only loop: 35% util, no pipeline overhead |
-| 2 | Vehicle analysis bottleneck | **No** | Removing it: +2.5 FPS (1.2x) |
-| 3 | Python GIL serialization | **Yes** | Overlap test: 35% → 80% GPU util |
-| 4 | Memory transfer overhead | **No** | 0.58ms total (3.3%) |
-| 5 | Pipeline design (single-stream) | **Yes** | GPU idle 65% even in ideal conditions |
-| 6 | Insufficient batching | **Cannot test** | TRT engine locked to batch=1 |
+| 1 | CPU preprocessing is the bottleneck | **Not primary** | GPU-only loop achieves same 35% util |
+| 2 | Vehicle analysis is the bottleneck | **No** | Removing it: +2.5 FPS (1.2x) |
+| 3 | Python GIL + sync postprocessing serializes GPU | **Yes** | Overlap test: 35% → 80% GPU util |
+| 4 | Memory transfer is a bottleneck | **No** | 0.58ms total (3.3% of inference) |
+| 5 | Low GPU kernel occupancy | **Unknown** | Need CUDA event timing inside detect() |
+| 6 | Insufficient batching | **Cannot test** | TRT engine batch=1 locked |
 
 ---
 
-### Root Cause
+### Root Cause Analysis
 
-**YOLO11x TensorRT on T4 has low GPU occupancy per inference call (~35%).**
-Each `detect()` does:
-1. Host→Device copy: ~0.3ms (fine)
-2. GPU inference: ~6ms (burst, GPU busy)
-3. NMS + box decoding (CPU sync): ~12ms (GPU idle)
-4. Device→Host copy: ~0.3ms (fine)
+**The pipeline serializes CPU postprocessing and GPU inference, creating idle bubbles.**
 
-The ~12ms of synchronous CPU postprocessing prevents the next frame from being submitted.
-The GPU finishes in ~6ms and waits ~12ms for Python to finish postprocessing.
+Current timeline (single frame):
 
-**This is intrinsic to running a single image through a large model.**
-The fix is **batch processing** — send 4 images at once to amortize the CPU sync overhead.
+```
+┌─────────────────────────────────────────┐
+│ detect() — 18.3 ms wall time             │
+│                                           │
+│  ┌──────────┐  ┌──────────────────────┐  │
+│  │ GPU exec  │  │ CPU: NMS, box       │  │
+│  │           │  │ decode, Python       │  │
+│  │ ??? ms    │  │ ??? ms               │  │
+│  └──────────┘  └──────────────────────┘  │
+└─────────────────────────────────────────┘
+                                          ┌──────────────────────────┐
+                                          │ Next detect() — 18.3 ms  │
+                                          │ GPU waits for CPU finish  │
+                                          └──────────────────────────┘
+```
+
+**The exact split between GPU compute and CPU postprocessing inside `detect()`
+is unknown.** This is the next measurement to take.
 
 ---
 
-### Updated Bottleneck Ranking (with new Annotator)
+### Next Experiments
 
-| Rank | Component | Old Total (ms) | New Estimate (ms) | Fix |
-|------|-----------|---------------|-------------------|-----|
-| 1 | detect | 28.0 | **18.3** | Batch inference (4 cams → 1 call) |
-| 2 | vehicle | 27.6 | **~10** | Already optimized (progressive enrichment) |
-| 3 | track | 5.8 | **~5** | Low priority |
-| 4 | encode | 13.5 | **~2** | **Fixed** (VideoWriter) |
-| 5 | render | 1.9 | **~2** | Low priority |
-| **Total** | | **78.9** | **~37** | **Theoretical max: ~27 FPS** |
+| # | Experiment | Method | Expected Outcome |
+|---|-----------|--------|-----------------|
+| A | **Split detect() timing** | CUDA events before/after predict() to isolate GPU compute from CPU postprocess | Identify whether GPU time is 6ms or 16ms per call |
+| B | **Concurrent YOLO processes** | 4 processes sharing 1 GPU via multiprocessing | Measures real batch-equivalent throughput; GPU util reveals headroom |
+| C | **Rebuild TRT dynamic batch** | Export with min=1, opt=4, max=8 | Enables `detect_batch()` for multi-camera |
 
-### Multi-Camera Path
 
-**Without batch inference (current):**
-```
-Camera 1: detect(18ms) → vehicle(10ms) → track(5ms) → encode(2ms)  = 35ms
-Camera 2: detect(18ms) → vehicle(10ms) → track(5ms) → encode(2ms)  = 35ms
-Camera 3: detect(18ms) → vehicle(10ms) → track(5ms) → encode(2ms)  = 35ms
-Camera 4: detect(18ms) → vehicle(10ms) → track(5ms) → encode(2ms)  = 35ms
-                                   Total: 140ms → **7 FPS system**
-```
+## Profiler Results (Single Camera, TensorRT YOLO11x, T4)
 
-**With batch inference (4-camera batch):**
-```
-Batch detect(40ms)  ← 4 frames in one TRT call
-  Camera 1: vehicle(10ms) + track(5ms) + encode(2ms)  = 17ms
-  Camera 2: vehicle(10ms) + track(5ms) + encode(2ms)  = 17ms
-  Camera 3: vehicle(10ms) + track(5ms) + encode(2ms)  = 17ms
-  Camera 4: vehicle(10ms) + track(5ms) + encode(2ms)  = 17ms
-                                   Total: 57ms → **70 FPS system**
-```
+500 frames of "The CCTV People Demo 2.mp4" (640×360, 25fps).
 
----
+### Per-Frame Timing
 
-### Next Steps
+| Stage          | Avg (ms) | Min (ms) | Max (ms) | % Runtime | Calls |
+|----------------|----------|----------|----------|-----------|-------|
+| detect         | 28.0     | 15.0     | 2720.8   | 36%       | 500   |
+| vehicle        | 27.6     | 0.0      | 3888.6   | 35%       | 500   |
+| encode         | 13.5     | 3.3      | 51.1     | 17%       | 500   |
+| track          | 5.8      | 0.4      | 20.2     | 7%        | 500   |
+| render         | 1.9      | 0.3      | 17.6     | 3%        | 500   |
+| interaction    | 0.4      | 0.0      | 3.0      | <1%       | 500   |
+| zones          | 0.4      | 0.0      | 2.8      | <1%       | 500   |
+| preprocess     | 0.1      | 0.1      | 3.8      | <1%       | 500   |
+| scene          | 0.1      | 0.0      | 0.4      | <1%       | 500   |
+| history        | 0.0      | 0.0      | 3.1      | <1%       | 500   |
 
-1. **Rebuild TensorRT engine with `max_batch_size=4`** to enable batched inference
-2. **Implement batch-aware `process_cameras()`** that groups 4 camera frames into one `detect_batch()` call
-3. **Pipeline CPU postprocessing overlaps with GPU inference** using producer-consumer queues
-4. Re-run benchmark to validate: expected **4–5x system throughput improvement** for 4 cameras
+**Total: 78.9 ms/frame → 12.7 FPS (old PNG-based Annotator)**
+
+### System Utilization
+
+| Metric         | Value              | Verdict                    |
+|----------------|--------------------|----------------------------|
+| GPU util (avg) | 17.9%              | **GPU idle 82% of time**   |
+| GPU util (peak)| 54.0%              | Never fully loaded          |
+| GPU memory     | 366 / 15360 MiB   | Barely using it             |
+| CPU util (avg) | 75.9%              | CPU saturated               |
+| CPU util (peak)| 100.0%             | Hitting the ceiling         |
+| ReID calls     | 13 (across 500 fr) | Caching works effectively   |
+
+### Bottleneck Ranking (old pipeline)
+
+| Rank | Component   | Total (ms) | %    | CPU/GPU | Expected Speedup |
+|------|-------------|------------|------|---------|-----------------|
+| 1    | detect      | 14015      | 36%  | GPU     | Medium (batch)   |
+| 2    | vehicle     | 13793      | 35%  | GPU/CPU | Low (one-time)   |
+| 3    | **encode**  | **6758**   | **17%** | **I/O** | **Fixed**        |
+| 4    | track       | 2876       | 7%   | CPU     | Low              |
+| 5    | render      | 956        | 3%   | CPU     | Low              |
+| 6-10 | other       | ~533       | ~3%  | CPU     | Negligible       |
+
+## Multi-Camera Profile (4 feeds, sequential pipeline)
+
+| Metric              | Value              |
+|---------------------|--------------------|
+| Total time          | 373s               |
+| Per-camera FPS      | 1.3 fps            |
+| GPU util (avg)      | 25.1%              |
+| GPU util (peak)     | 95.0%              |
+| CPU util (avg)      | 71.8%              |
+| GPU memory          | 1131 / 15360 MiB   |
+
+## Revised Roadmap
+
+| Priority | Task | Confidence |
+|----------|------|-----------|
+| 1 | Pipeline CPU/GPU overlap (producer-consumer) | Very High |
+| 2 | Rebuild TensorRT engine with dynamic batch (min=1, opt=4, max=8) | Very High |
+| 3 | Shared detector for all cameras | Very High |
+| 4 | Split detector timing: GPU execution vs CPU postprocessing | High |
+| 5 | Vehicle micro-profiling | Medium |
+| 6 | CPU worker scaling if hardware allows | Medium |
