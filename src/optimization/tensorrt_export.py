@@ -54,8 +54,20 @@ def export_to_engine(
     if batch_size > 1:
         export_kwargs["batch"] = batch_size
     model.export(**export_kwargs)
-    if not Path(export_path).exists():
+
+    # Export saves to default name (e.g. yolo11x.engine). Rename to batch-specific name.
+    default_name = f"{_model_name_key(model_family, model_size)}.engine"
+    default_path = Path(default_name)
+    target_path = Path(export_path)
+
+    if default_path.exists() and target_path != default_path:
+        if target_path.exists():
+            target_path.unlink()
+        default_path.rename(target_path)
+    elif not target_path.exists():
+        # Fallback: glob for any engine file
         found = list(Path(".").glob(f"{_model_name_key(model_family, model_size)}*.engine"))
         if found:
             return str(found[0].absolute())
-    return str(Path(export_path).absolute())
+
+    return str(target_path.absolute())
