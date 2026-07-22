@@ -109,7 +109,6 @@ class CameraSimulator:
         self.time_sync = TimeSync(fps=source_fps)
         self.vehicle = VehicleAnalyzer(plate_read_interval=10)
         self.face_recognizer = FaceRecognizer(device=detector.device)
-        self._face_interval = max(1, int(source_fps / 5))  # ~5 FPS face check
 
         # Results
         self.lag_records: list[dict] = []

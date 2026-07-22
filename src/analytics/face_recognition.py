@@ -1,14 +1,17 @@
 """Face detection and recognition for person tracks.
 
 Uses insightface (RetinaFace + ArcFace) when available.
-
 Gallery persisted as JSON with base64-encoded embeddings.
+
+Heavy GPU inference (model.get) is offloaded to a thread pool so the
+main pipeline never blocks on face recognition.
 """
 
 import base64
 import json
 import logging
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -108,7 +111,8 @@ class FaceRecognizer:
                  min_face_size: int = 40, match_threshold: float = 0.45,
                  confirm_frames: int = 5,
                  capture_unknowns: bool = True,
-                 unknown_dir: str = "unknown_faces"):
+                 unknown_dir: str = "unknown_faces",
+                 max_workers: int = 1):
         self._gallery = FaceGallery(gallery_path)
         self._device = device
         self._min_face_size = min_face_size
@@ -124,6 +128,14 @@ class FaceRecognizer:
 
         # Unknown face store
         self._unknown_store = UnknownFaceStore(unknown_dir) if capture_unknowns else None
+
+        # Async inference offload
+        self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._pending_faces: dict[int, tuple[Future, int]] = {}  # track_id → (future, frame_idx)
+
+        # Face interval throttling (process each track at most every N frames)
+        self._face_interval = 6  # ~4 FPS at 25 FPS
+        self._last_process_frame: dict[int, int] = {}
 
         # Load model
         self._model = self._load_model()
@@ -153,75 +165,132 @@ class FaceRecognizer:
 
     def process_frame(self, frame: np.ndarray, tracks: list,
                       frame_idx: int) -> list[dict]:
-        """Process all person tracks in a frame for face recognition.
+        """Process all person tracks for face recognition — async.
 
-        Returns list of events: [{"type": "face_recognized", "track_id": ..., "name": ..., "confidence": ...}]
+        Heavy GPU inference (insightface model.get) runs in a thread pool
+        so the main pipeline is never blocked. Results are collected on
+        subsequent frames with a 1-2 frame delay, which is fine since
+        identity confirmation requires multiple frames anyway.
+
+        Returns list of events from *completed* async results.
         """
         events = []
         if not self.available:
             return events
 
+        # 1. Collect completed async results
+        self._collect_pending(events, frame_idx)
+
+        # 2. Submit new face crops for tracks not yet identified
         for t in tracks:
             if t.class_name != "person":
                 continue
             if t.id in self._track_identity:
                 continue  # already confirmed
+            if t.id in self._pending_faces:
+                continue  # already pending from a previous frame
 
-            x1, y1, x2, y2 = t.bbox
-            face_roi = self._crop_face_region(frame, x1, y1, x2, y2)
+            # Throttle: skip if we processed this track recently
+            last = self._last_process_frame.get(t.id, -1)
+            if frame_idx - last < self._face_interval:
+                continue
+
+            face_roi = self._crop_face_region(frame, t.bbox[0], t.bbox[1], t.bbox[2], t.bbox[3])
             if face_roi is None:
                 continue
 
+            self._last_process_frame[t.id] = frame_idx
+            future = self._executor.submit(self._run_face_inference,
+                                           face_roi, t.id, frame_idx)
+            self._pending_faces[t.id] = (future, frame_idx)
+
+        return events
+
+    def _run_face_inference(self, face_roi: np.ndarray,
+                            track_id: int, frame_idx: int) -> dict | None:
+        """Run GPU face inference in a background thread."""
+        try:
+            faces = self._model.get(face_roi)
+        except Exception:
+            return None
+        if not faces:
+            return None
+
+        face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        embedding = face.normed_embedding
+        if embedding is None:
+            return None
+
+        name, sim = self._gallery.match(embedding, self._match_threshold)
+        return {
+            "track_id": track_id,
+            "frame": frame_idx,
+            "embedding": embedding,
+            "name": name,
+            "sim": sim,
+            "det_score": float(face.det_score) if hasattr(face, 'det_score') else 0.0,
+            "face_roi": face_roi,
+        }
+
+    def _collect_pending(self, events: list, current_frame: int):
+        """Collect completed async face inference results."""
+        done_ids = []
+        for tid, (future, submit_frame) in self._pending_faces.items():
+            if not future.done():
+                continue
+            done_ids.append(tid)
+
             try:
-                faces = self._model.get(face_roi)
+                result = future.result()
             except Exception:
                 continue
-
-            if not faces:
+            if result is None:
                 continue
 
-            # Take the largest face in the crop
-            face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-            embedding = face.normed_embedding
-            if embedding is None:
-                continue
+            tid_ = result["track_id"]
+            embedding = result["embedding"]
+            name = result["name"]
+            sim = result["sim"]
 
-            name, sim = self._gallery.match(embedding, self._match_threshold)
             if name is None:
-                # Unknown face — capture it
+                # Unknown face
                 if self._capture_unknowns and self._unknown_store is not None:
                     self._unknown_store.capture(
-                        t.id, frame_idx, face_roi, embedding,
-                        float(face.det_score) if hasattr(face, 'det_score') else 0.0,
+                        tid_, submit_frame, result["face_roi"], embedding,
+                        result["det_score"],
                     )
                 continue
 
             # Accumulate votes across frames
-            self._track_name_counts.setdefault(t.id, {})[name] = self._track_name_counts[t.id].get(name, 0) + 1
-            self._track_embeddings.setdefault(t.id, []).append(embedding)
+            self._track_name_counts.setdefault(tid_, {})[name] = \
+                self._track_name_counts[tid_].get(name, 0) + 1
+            self._track_embeddings.setdefault(tid_, []).append(embedding)
 
-            total = sum(self._track_name_counts[t.id].values())
-            best_name = max(self._track_name_counts[t.id], key=self._track_name_counts[t.id].get)
-            best_count = self._track_name_counts[t.id][best_name]
+            total = sum(self._track_name_counts[tid_].values())
+            best_name = max(self._track_name_counts[tid_],
+                            key=self._track_name_counts[tid_].get)
+            best_count = self._track_name_counts[tid_][best_name]
 
             if best_count >= self._confirm_frames and best_count / total >= 0.6:
-                # Confirm identity
-                all_embs = self._track_embeddings[t.id]
+                all_embs = self._track_embeddings[tid_]
                 avg_emb = np.mean(all_embs, axis=0)
                 avg_emb /= np.linalg.norm(avg_emb) + 1e-8
 
-                self._track_identity[t.id] = best_name
-                self._track_confidence[t.id] = float(np.dot(avg_emb, self._gallery._entries[best_name]["embedding"]))
+                self._track_identity[tid_] = best_name
+                self._track_confidence[tid_] = float(
+                    np.dot(avg_emb, self._gallery._entries[best_name]["embedding"]))
                 events.append({
                     "type": "face_recognized",
-                    "track_id": t.id,
+                    "track_id": tid_,
                     "name": best_name,
-                    "confidence": round(self._track_confidence[t.id], 3),
-                    "frame": frame_idx,
+                    "confidence": round(self._track_confidence[tid_], 3),
+                    "frame": submit_frame,
                 })
-                log.info("Recognized track %d as '%s' (sim=%.3f)", t.id, best_name, self._track_confidence[t.id])
+                log.info("Recognized track %d as '%s' (sim=%.3f)",
+                         tid_, best_name, self._track_confidence[tid_])
 
-        return events
+        for tid in done_ids:
+            self._pending_faces.pop(tid, None)
 
     def _crop_face_region(self, frame: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> np.ndarray | None:
         """Extract upper portion of person bbox where face is expected."""
