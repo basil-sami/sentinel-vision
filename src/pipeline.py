@@ -57,6 +57,8 @@ def analyze_video(
     use_cmc: bool = False,
     reid_refresh_interval: int = 50,
     reid_new_track_frames: int = 3,
+    min_face_size: int = 40,
+    face_interval: int = 6,
     detector: "YOLODetector | None" = None,
 ) -> dict:
     output_dir = Path(output_dir)
@@ -113,7 +115,8 @@ def analyze_video(
     predictor = TrackPredictor()
     correlator = EventCorrelator()
     time_sync = TimeSync(fps=loader.fps)
-    face_recognizer = FaceRecognizer(device=device)
+    face_recognizer = FaceRecognizer(device=device, min_face_size=min_face_size)
+    face_recognizer._face_interval = face_interval
 
     output_video_path = str(output_dir / "output_tracking.mp4")
     annotator = Annotator(
@@ -287,7 +290,8 @@ def analyze_video(
     annotator.release()
     loader.release()
 
-    log.info("Frames processed: %d", i + 1)
+    frames_processed = i + 1 if 'i' in dir() else 0
+    log.info("Frames processed: %d", frames_processed)
     log.info("Raw tracks: %d", len(history.export()))
 
     objects_export = history.export()
