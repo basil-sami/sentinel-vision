@@ -88,7 +88,8 @@ class CameraSimulator:
 
     def __init__(self, name: str, frames: list[np.ndarray],
                  source_fps: float, speed: float,
-                 detector: YOLODetector, conf_threshold: float = 0.4):
+                 detector: YOLODetector, conf_threshold: float = 0.4,
+                 batch_size: int = 1):
         self.name = name
         self.frames = frames
         self.source_fps = source_fps
@@ -96,6 +97,7 @@ class CameraSimulator:
         self.detector = detector
         self.conf_threshold = conf_threshold
         self.frame_interval = 1.0 / (source_fps * speed)
+        self.batch_size = batch_size
 
         # Pipeline stages
         self.tracker = Tracker(
@@ -110,6 +112,9 @@ class CameraSimulator:
         self.vehicle = VehicleAnalyzer(plate_read_interval=10)
         self.face_recognizer = FaceRecognizer(device=detector.device)
 
+        # Batch accumulation buffer
+        self._batch_buffer: list[tuple[int, np.ndarray, float]] = []
+
         # Results
         self.lag_records: list[dict] = []
         self.stage_times: list[dict] = []
@@ -121,14 +126,16 @@ class CameraSimulator:
         self._stop.set()
 
     def run(self):
-        t_start = time.perf_counter()
-        for i, frame in enumerate(self.frames):
+        self._t_start = time.perf_counter()
+        i = 0
+        while i < len(self.frames):
             if self._stop.is_set():
                 break
 
-            expected_capture_time = t_start + i * self.frame_interval
+            expected_capture_time = self._t_start + i * self.frame_interval
             now = time.perf_counter()
             if now - expected_capture_time > 1.0:
+                i += 1
                 self.dropped += 1
                 continue
 
@@ -137,62 +144,94 @@ class CameraSimulator:
                 time.sleep(sleep)
 
             capture_t = time.perf_counter()
+            frame = self.frames[i]
 
-            # ── Pipeline stages ──
-            stages = {}
+            if self.batch_size > 1:
+                self._batch_buffer.append((i, frame, capture_t, expected_capture_time))
+                i += 1
+                if len(self._batch_buffer) < self.batch_size:
+                    continue
+                self._process_batch()
+            else:
+                self._process_one(i, frame, capture_t, expected_capture_time)
+                i += 1
+
+    def _process_one(self, frame_idx: int, frame: np.ndarray,
+                     capture_t: float, expected_t: float):
+        stages = {}
+
+        t0 = time.perf_counter()
+        detections = self.detector.detect(frame, conf_threshold=self.conf_threshold)
+        stages["detect"] = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        tracks = self.tracker.update(detections, frame, frame_index=frame_idx)
+        stages["track"] = time.perf_counter() - t0
+
+        self._run_analytics(frame, tracks, frame_idx, stages, expected_t)
+
+    def _process_batch(self):
+        indices, batch_frames, cap_times, expected_times = zip(*self._batch_buffer)
+        self._batch_buffer.clear()
+
+        t0 = time.perf_counter()
+        detections_batch = self.detector.detect_batch(
+            list(batch_frames), conf_threshold=self.conf_threshold)
+        detect_time = time.perf_counter() - t0
+        per_frame_detect = detect_time / len(batch_frames)
+
+        for j, (idx, frm, ct, et) in enumerate(zip(indices, batch_frames, cap_times, expected_times)):
+            stages = {"detect": per_frame_detect}
 
             t0 = time.perf_counter()
-            detections = self.detector.detect(frame, conf_threshold=self.conf_threshold)
-            stages["detect"] = time.perf_counter() - t0
-
-            t0 = time.perf_counter()
-            tracks = self.tracker.update(detections, frame, frame_index=i)
+            tracks = self.tracker.update(detections_batch[j], frm, frame_index=idx)
             stages["track"] = time.perf_counter() - t0
 
-            for t in tracks:
-                self.identity.update(t.id, t.bbox, t.confidence, i)
-                cx = (t.bbox[0] + t.bbox[2]) // 2
-                cy = (t.bbox[1] + t.bbox[3]) // 2
-                self.predictor.update(t.id, cx, cy, i)
+            self._run_analytics(frm, tracks, idx, stages, et)
 
-            t0 = time.perf_counter()
-            self.vehicle.process_frame(frame, tracks, i)
-            stages["vehicle"] = time.perf_counter() - t0
+    def _run_analytics(self, frame: np.ndarray, tracks: list,
+                       frame_idx: int, stages: dict, expected_t: float):
+        for t in tracks:
+            self.identity.update(t.id, t.bbox, t.confidence, frame_idx)
+            cx = (t.bbox[0] + t.bbox[2]) // 2
+            cy = (t.bbox[1] + t.bbox[3]) // 2
+            self.predictor.update(t.id, cx, cy, frame_idx)
 
-            t0 = time.perf_counter()
-            face_events = self.face_recognizer.process_frame(frame, tracks, i) if self.face_recognizer.available else []
-            stages["face"] = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        self.vehicle.process_frame(frame, tracks, frame_idx)
+        stages["vehicle"] = time.perf_counter() - t0
 
-            t0 = time.perf_counter()
-            ts = self.time_sync.frame_timestamp(i)
-            stages["timesync"] = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        face_events = self.face_recognizer.process_frame(frame, tracks, frame_idx) if self.face_recognizer.available else []
+        stages["face"] = time.perf_counter() - t0
 
-            t0 = time.perf_counter()
-            inc_events = []
-            for ev in face_events:
-                inc = self.correlator.process_event({
-                    "type": ev.get("type", "face_recognized"),
-                    "track_id": ev.get("track_id", -1),
-                    "timestamp": ts.utc_timestamp,
-                    "severity": "medium",
-                })
-                if inc:
-                    inc_events.append(inc)
-            stages["correlate"] = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        ts = self.time_sync.frame_timestamp(frame_idx)
+        stages["timesync"] = time.perf_counter() - t0
 
-            pipe_end = time.perf_counter()
-
-            lag = pipe_end - expected_capture_time
-            self.lag_records.append({
-                "frame": i,
-                "capture_t": capture_t,
-                "pipe_end": pipe_end,
-                "lag_s": round(lag, 4),
-                "detections": len(detections),
-                "tracks": len(tracks),
+        t0 = time.perf_counter()
+        for ev in face_events:
+            self.correlator.process_event({
+                "type": ev.get("type", "face_recognized"),
+                "track_id": ev.get("track_id", -1),
+                "timestamp": ts.utc_timestamp,
+                "severity": "medium",
             })
-            self.stage_times.append(stages)
-            self.processed += 1
+        stages["correlate"] = time.perf_counter() - t0
+
+        pipe_end = time.perf_counter()
+        lag = pipe_end - expected_t
+
+        self.lag_records.append({
+            "frame": frame_idx,
+            "capture_t": expected_t,
+            "pipe_end": pipe_end,
+            "lag_s": round(lag, 4),
+            "detections": 0,  # not tracked separately
+            "tracks": len(tracks),
+        })
+        self.stage_times.append(stages)
+        self.processed += 1
 
     def summary(self) -> dict:
         if not self.lag_records:
@@ -295,6 +334,10 @@ def main():
                         help="Playback speed multiplier (1.0 = real-time)")
     parser.add_argument("--multi", action="store_true",
                         help="Simulate 4 cameras instead of 1")
+    parser.add_argument("--dedicated", action="store_true",
+                        help="Each camera gets its own YOLODetector (vs shared)")
+    parser.add_argument("--batch-size", type=int, default=1,
+                        help="Accumulate N frames then detect_batch (default: 1 = no batching)")
     parser.add_argument("--model-size", default="medium",
                         choices=["nano", "small", "medium", "large", "xlarge"])
     parser.add_argument("--tensorrt", action="store_true")
@@ -306,17 +349,20 @@ def main():
     print(f"  REAL-TIME CAMERA SIMULATOR")
     print(f"  Model: YOLO11{args.model_size} {'TensorRT' if args.tensorrt else 'PyTorch'}")
     print(f"  Speed: {args.speed}x  |  Frames: {args.frames}  |  Cameras: {'4' if args.multi else '1'}")
+    if args.dedicated:
+        print(f"  Mode:  DEDICATED detectors per camera")
+    if args.batch_size > 1:
+        print(f"  Batch: {args.batch_size} frames")
     print(f"{'=' * 70}")
 
-    # Load detector once (shared across cameras)
-    print("\nLoading detector...")
-    detector = YOLODetector(
-        model_family="yolo11",
-        model_size=args.model_size,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        use_tensorrt=args.tensorrt,
-    )
-    print("  Done.")
+    def _make_detector():
+        return YOLODetector(
+            model_family="yolo11",
+            model_size=args.model_size,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            use_tensorrt=args.tensorrt,
+            batch_size=args.batch_size,
+        )
 
     # Prepare feeds
     if args.multi:
@@ -332,7 +378,15 @@ def main():
             print(f"  WARNING: no frames from {path}, skipping")
             continue
         print(f"\n  {name}: {len(frames)} frames @ {fps:.0f} FPS (simulating {fps*args.speed:.0f} FPS)")
-        cameras.append(CameraSimulator(name, frames, fps, args.speed, detector))
+        if args.dedicated:
+            print(f"  Loading dedicated detector for {name}...")
+            detector = _make_detector()
+        elif len(cameras) == 0:
+            print("\nLoading detector...")
+            detector = _make_detector()
+            print("  Done.")
+        cameras.append(CameraSimulator(name, frames, fps, args.speed, detector,
+                                       batch_size=args.batch_size))
 
     if not cameras:
         print("No cameras to simulate.")

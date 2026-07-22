@@ -123,12 +123,16 @@ class YOLODetector:
         target_classes: dict[int, str] | None = None,
         use_tensorrt: bool = False,
         tensorrt_half: bool = True,
+        batch_size: int = 1,
     ):
         self.device = device
         self.target_classes = target_classes if target_classes is not None else COCO_TARGET_CLASSES
+        self.batch_size = batch_size
 
         if use_tensorrt and device.startswith("cuda"):
-            if has_engine(model_family, model_size, half=tensorrt_half):
+            if has_engine(model_family, model_size, half=tensorrt_half, batch_size=batch_size):
+                model_path = engine_path(model_family, model_size, half=tensorrt_half, batch_size=batch_size)
+            elif batch_size == 1 and has_engine(model_family, model_size, half=tensorrt_half):
                 model_path = engine_path(model_family, model_size, half=tensorrt_half)
             else:
                 try:
@@ -137,6 +141,7 @@ class YOLODetector:
                         model_size=model_size,
                         half=tensorrt_half,
                         device=0,
+                        batch_size=batch_size,
                     )
                 except Exception:
                     model_path = None
