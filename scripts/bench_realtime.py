@@ -36,6 +36,9 @@ from src.detection import YOLODetector
 from src.tracking.tracker import Tracker
 from src.analytics.identity import IdentityConfidence
 from src.analytics.prediction import TrackPredictor
+from src.analytics.correlation import EventCorrelator
+from src.analytics.time_sync import TimeSync
+from src.analytics.face_recognition import FaceRecognizer
 from src.analytics.vehicle.orchestrator import VehicleAnalyzer
 
 
@@ -102,7 +105,11 @@ class CameraSimulator:
         )
         self.identity = IdentityConfidence()
         self.predictor = TrackPredictor()
+        self.correlator = EventCorrelator()
+        self.time_sync = TimeSync(fps=source_fps)
         self.vehicle = VehicleAnalyzer(plate_read_interval=10)
+        self.face_recognizer = FaceRecognizer(device=detector.device)
+        self._face_interval = max(1, int(source_fps / 5))  # ~5 FPS face check
 
         # Results
         self.lag_records: list[dict] = []
@@ -152,6 +159,27 @@ class CameraSimulator:
             t0 = time.perf_counter()
             self.vehicle.process_frame(frame, tracks, i)
             stages["vehicle"] = time.perf_counter() - t0
+
+            t0 = time.perf_counter()
+            face_events = self.face_recognizer.process_frame(frame, tracks, i) if self.face_recognizer.available else []
+            stages["face"] = time.perf_counter() - t0
+
+            t0 = time.perf_counter()
+            ts = self.time_sync.frame_timestamp(i)
+            stages["timesync"] = time.perf_counter() - t0
+
+            t0 = time.perf_counter()
+            inc_events = []
+            for ev in face_events:
+                inc = self.correlator.process_event({
+                    "type": ev.get("type", "face_recognized"),
+                    "track_id": ev.get("track_id", -1),
+                    "timestamp": ts.utc_timestamp,
+                    "severity": "medium",
+                })
+                if inc:
+                    inc_events.append(inc)
+            stages["correlate"] = time.perf_counter() - t0
 
             pipe_end = time.perf_counter()
 
@@ -233,7 +261,7 @@ def _print_report(results: list[CameraSimulator], output_csv: str | None):
                 all_stages.setdefault(stage, []).append(t)
     if all_stages:
         print(f"\n  Per-frame stage times (avg across all cameras):")
-        for stage in ["detect", "track", "vehicle"]:
+        for stage in ["detect", "track", "vehicle", "face", "timesync", "correlate"]:
             if stage in all_stages:
                 vals = all_stages[stage]
                 print(f"    {stage:<12s} {sum(vals)/len(vals)*1000:>6.1f} ms avg  ({min(vals)*1000:.1f}-{max(vals)*1000:.1f} ms)")
@@ -242,7 +270,7 @@ def _print_report(results: list[CameraSimulator], output_csv: str | None):
         with open(output_csv, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["camera", "frame", "capture_t", "pipe_end", "lag_s", "detections", "tracks",
-                         "detect_ms", "track_ms", "vehicle_ms"])
+                         "detect_ms", "track_ms", "vehicle_ms", "face_ms", "timesync_ms", "correlate_ms"])
             for sim in results:
                 for j, r in enumerate(sim.lag_records):
                     st = sim.stage_times[j] if j < len(sim.stage_times) else {}
@@ -250,7 +278,10 @@ def _print_report(results: list[CameraSimulator], output_csv: str | None):
                                 r["lag_s"], r["detections"], r["tracks"],
                                 round(st.get("detect", 0)*1000, 2),
                                 round(st.get("track", 0)*1000, 2),
-                                round(st.get("vehicle", 0)*1000, 2)])
+                                round(st.get("vehicle", 0)*1000, 2),
+                                round(st.get("face", 0)*1000, 2),
+                                round(st.get("timesync", 0)*1000, 2),
+                                round(st.get("correlate", 0)*1000, 2)])
         print(f"\n  CSV: {output_csv}")
 
 

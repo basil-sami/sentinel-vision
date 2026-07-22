@@ -1,4 +1,5 @@
 from collections import defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor
 
 from src.analytics.vehicle.plate_detector import PlateDetector
 from src.analytics.vehicle.plate_reader import PlateReader
@@ -13,6 +14,7 @@ from src.analytics.vehicle.events import (
 )
 from src.analytics.vehicle.attribute_cache import AttributeManager, AttributeState, MAX_PLATE_ATTEMPTS, COLOR_CONSISTENT_NEEDED
 from src.analytics.vehicle.candidate_buffer import TopKBuffer
+from src.analytics.vehicle.ocr_pool import get_ocr_pool
 from src.models.event import Event
 
 
@@ -29,8 +31,11 @@ OCR_FRAME_INTERVAL = 20
 
 class VehicleAnalyzer:
     def __init__(self, parking_timeout_sec: float = 300.0, plate_read_interval: int = 10):
-        self._plate_detector = PlateDetector()
-        self._plate_reader = PlateReader()
+        self._ocr_pool = get_ocr_pool()
+        self._ocr_pool.warmup()
+        self._plate_detector = PlateDetector(self._ocr_pool)
+        self._plate_reader = PlateReader(self._ocr_pool)
+        self._executor = ThreadPoolExecutor(max_workers=1)
         self._registry = VehicleRegistry(parking_timeout_sec=parking_timeout_sec)
         self._attrs = AttributeManager()
         self._buffers: dict[int, TopKBuffer] = {}
@@ -39,6 +44,8 @@ class VehicleAnalyzer:
         self._plate_buffer: dict[int, list] = defaultdict(list)
         self._reported_plates: set[int] = set()
         self._last_read_frame: dict[int, int] = {}
+        self._pending_read: dict[int, Future] = {}
+        self._pending_collect: dict[int, dict] = {}
 
     def _get_buffer(self, track_id: int) -> TopKBuffer:
         if track_id not in self._buffers:
@@ -48,6 +55,8 @@ class VehicleAnalyzer:
     def process_frame(self, frame, tracks: list, frame_index: int, calibrator=None) -> list[Event]:
         events = []
         seen_tracks = set()
+
+        self._collect_pending_reads(events)
 
         for t in tracks:
             if t.class_name not in VEHICLE_CLASSES:
@@ -121,13 +130,24 @@ class VehicleAnalyzer:
                             )
 
                             best = buffer.best()
-                            if best and best.score >= PLATE_HIGH_QUALITY_THRESHOLD:
-                                self._run_ocr(t.id, best, events, [cx, cy])
+                            if best and best.score >= PLATE_HIGH_QUALITY_THRESHOLD and t.id not in self._pending_read:
+                                future = self._plate_reader.read_async(best.plate_crop)
+                                self._pending_read[t.id] = future
+                                self._pending_collect[t.id] = {
+                                    "track_id": t.id, "candidate": best, "location": [cx, cy],
+                                    "frame": frame_index,
+                                }
 
                 if attrs.plate.attempts >= MAX_PLATE_ATTEMPTS and attrs.plate.state != AttributeState.VERIFIED:
-                    if len(buffer) > 0:
-                        self._run_ocr(t.id, buffer.best(), events, [cx, cy])
-                    else:
+                    if len(buffer) > 0 and t.id not in self._pending_read:
+                        best = buffer.best()
+                        future = self._plate_reader.read_async(best.plate_crop)
+                        self._pending_read[t.id] = future
+                        self._pending_collect[t.id] = {
+                            "track_id": t.id, "candidate": best, "location": [cx, cy],
+                            "frame": frame_index,
+                        }
+                    elif len(buffer) == 0:
                         attrs.plate.state = AttributeState.FAILED
 
             # --- Speed check ---
@@ -211,7 +231,17 @@ class VehicleAnalyzer:
             return
         buffer = self._buffers.get(track_id)
         if buffer and len(buffer) > 0:
-            self._run_ocr(track_id, buffer.best(), events, [0, 0])
+            if track_id not in self._pending_read:
+                future = self._plate_reader.read_async(buffer.best().plate_crop)
+                self._pending_read[track_id] = future
+                self._pending_collect[track_id] = {
+                    "track_id": track_id, "candidate": buffer.best(), "location": [0, 0],
+                    "frame": 0,
+                }
+            # Check if async result is ready immediately
+            future = self._pending_read.get(track_id)
+            if future and future.done():
+                self._collect_pending_reads(events)
         else:
             attrs.plate.state = AttributeState.FAILED
 
@@ -249,6 +279,35 @@ class VehicleAnalyzer:
                 best = max(buf, key=lambda r: r[1])
                 self._registry.register(tid, best[0], "", "", "")
             del self._plate_buffer[tid]
+
+    def _collect_pending_reads(self, events: list):
+        done_ids = []
+        for tid, future in self._pending_read.items():
+            if not future.done():
+                continue
+            done_ids.append(tid)
+            info = self._pending_collect.pop(tid, None)
+            if info is None:
+                continue
+            read_result = self._plate_reader.collect_read(future)
+            plate_text = read_result.get("plate", "")
+            plate_conf = read_result.get("confidence", 0.0)
+
+            attrs = self._attrs.get(tid)
+            if plate_text and plate_conf > 0:
+                attrs.plate.value = plate_text
+                attrs.plate.confidence = plate_conf
+                attrs.plate.state = AttributeState.LOCKED
+                if tid not in self._reported_plates:
+                    self._reported_plates.add(tid)
+                    loc = info.get("location", [0, 0])
+                    events.append(plate_read_event(tid, plate_text, plate_conf, loc))
+                self._plate_buffer[tid].append((plate_text, plate_conf))
+            else:
+                if attrs.plate.attempts >= MAX_PLATE_ATTEMPTS:
+                    attrs.plate.state = AttributeState.FAILED
+        for tid in done_ids:
+            self._pending_read.pop(tid, None)
 
     def get_registry(self) -> VehicleRegistry:
         return self._registry

@@ -1,23 +1,20 @@
+from concurrent.futures import Future
+
 import cv2
 import numpy as np
 
+from src.analytics.vehicle.ocr_pool import get_ocr_pool
+
 
 class PlateDetector:
-    def __init__(self):
-        self._ocr = None
+    def __init__(self, ocr_pool=None):
+        self._ocr_pool = ocr_pool or get_ocr_pool()
+        self._pending: dict[int, Future] = {}  # track_id -> Future
 
-    def _lazy_init(self):
-        if self._ocr is not None:
-            return
-        try:
-            from paddleocr import PaddleOCR
-            self._ocr = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
-        except ImportError:
-            self._ocr = False
+    def _fallback(self):
+        return False  # contour fallback handled in detect()
 
     def detect(self, frame: np.ndarray, vehicle_bbox: tuple[int, int, int, int]) -> dict | None:
-        self._lazy_init()
-
         x1, y1, x2, y2 = vehicle_bbox
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
@@ -25,16 +22,38 @@ class PlateDetector:
         if crop.shape[0] < 20 or crop.shape[1] < 20:
             return None
 
-        if self._ocr is False:
-            return self._contour_fallback(crop, x1, y1)
+        results = self._ocr_pool.detect_sync(crop)
+        return self._parse_results(results, crop, x1, y1)
 
-        if self._ocr is not None:
-            try:
-                results = self._ocr.ocr(crop, det=True, rec=False, cls=False)
-            except Exception:
-                results = None
+    def detect_async(self, track_id: int, frame: np.ndarray,
+                     vehicle_bbox: tuple[int, int, int, int]) -> Future | None:
+        """Submit async plate detection and return Future."""
+        x1, y1, x2, y2 = vehicle_bbox
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+        crop = frame[y1:y2, x1:x2]
+        if crop.shape[0] < 20 or crop.shape[1] < 20:
+            return None
+        future = self._ocr_pool.submit_detect(crop)
+        self._pending[track_id] = future
+        return future
 
-            if results and len(results) > 0 and results[0] is not None:
+    def collect_result(self, track_id: int, x1: int, y1: int) -> dict | None:
+        """Collect async result for a track. Returns None if not ready."""
+        future = self._pending.pop(track_id, None)
+        if future is None or not future.done():
+            return None
+        try:
+            results = future.result()
+        except Exception:
+            return None
+        return self._parse_results(results, None, x1, y1)
+
+    def _parse_results(self, results, crop, x1: int, y1: int) -> dict | None:
+        if results is None:
+            return self._contour_fallback(crop, x1, y1) if crop is not None else None
+        if isinstance(results, list):
+            if len(results) > 0 and results[0] is not None:
                 best = max(results[0], key=lambda r: (r[1][2] - r[1][0]) * (r[1][3] - r[1][1]))
                 poly = best[0]
                 xs = [int(p[0]) for p in poly]
@@ -46,8 +65,9 @@ class PlateDetector:
                     "confidence": 0.8,
                     "method": "paddle",
                 }
-
-        return self._contour_fallback(crop, x1, y1)
+        if crop is not None:
+            return self._contour_fallback(crop, x1, y1)
+        return None
 
     def _contour_fallback(self, crop: np.ndarray, offset_x: int, offset_y: int) -> dict | None:
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
