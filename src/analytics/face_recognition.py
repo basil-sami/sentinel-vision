@@ -106,18 +106,24 @@ class FaceRecognizer:
 
     def __init__(self, gallery_path: str = "face_gallery.json", device: str = "cuda",
                  min_face_size: int = 40, match_threshold: float = 0.45,
-                         confirm_frames: int = 5):
+                 confirm_frames: int = 5,
+                 capture_unknowns: bool = True,
+                 unknown_dir: str = "unknown_faces"):
         self._gallery = FaceGallery(gallery_path)
         self._device = device
         self._min_face_size = min_face_size
         self._match_threshold = match_threshold
         self._confirm_frames = confirm_frames
+        self._capture_unknowns = capture_unknowns
 
         # Track identity state
         self._track_identity: dict[int, str] = {}          # track_id → name
         self._track_confidence: dict[int, float] = {}      # track_id → avg similarity
         self._track_embeddings: dict[int, list[np.ndarray]] = {}  # track_id → [embeddings]
         self._track_name_counts: dict[int, dict[str, int]] = {}   # track_id → {name: count}
+
+        # Unknown face store
+        self._unknown_store = UnknownFaceStore(unknown_dir) if capture_unknowns else None
 
         # Load model
         self._model = self._load_model()
@@ -182,6 +188,12 @@ class FaceRecognizer:
 
             name, sim = self._gallery.match(embedding, self._match_threshold)
             if name is None:
+                # Unknown face — capture it
+                if self._capture_unknowns and self._unknown_store is not None:
+                    self._unknown_store.capture(
+                        t.id, frame_idx, face_roi, embedding,
+                        float(face.det_score) if hasattr(face, 'det_score') else 0.0,
+                    )
                 continue
 
             # Accumulate votes across frames
@@ -254,3 +266,117 @@ class FaceRecognizer:
             log.warning("Cannot read image: %s", image_path)
             return False
         return self.add_known_face(name, cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+    @property
+    def unknown_store(self) -> "UnknownFaceStore":
+        return self._unknown_store
+
+
+# ---------------------------------------------------------------------------
+# Unknown Face Capture
+# ---------------------------------------------------------------------------
+
+class UnknownFaceStore:
+    """Persistent store of unknown (unrecognized) face captures.
+
+    Each unknown face is saved as:
+      unknown_faces/unknown_{seq:04d}.jpg  (face crop image)
+      unknown_faces/index.json             (embedding + metadata)
+
+    A separate script can batch-match these against a known-face database
+    and promote them to the gallery. Only the first sighting of each track
+    is captured (deduplicated per run via _captured_tracks).
+    """
+
+    def __init__(self, storage_dir: str = "unknown_faces"):
+        self._dir = Path(storage_dir)
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._index_path = self._dir / "index.json"
+        self._index: list[dict] = []
+        self._seq = 0
+        self._captured_tracks: set[int] = set()  # per-run, avoid dupes
+        self._load()
+
+    def _load(self):
+        if self._index_path.exists():
+            try:
+                self._index = json.loads(self._index_path.read_text())
+                self._seq = len(self._index)
+            except Exception:
+                self._index = []
+
+    def save(self):
+        self._index_path.write_text(json.dumps(self._index, indent=2))
+
+    def capture(self, track_id: int, frame_idx: int,
+                face_crop: np.ndarray, embedding: np.ndarray,
+                det_score: float) -> str:
+        """Save an unknown face and return its ID."""
+        if track_id in self._captured_tracks:
+            return ""
+        self._captured_tracks.add(track_id)
+
+        uid = f"unknown_{self._seq:04d}"
+        img_path = self._dir / f"{uid}.jpg"
+        import cv2
+        cv2.imwrite(str(img_path), cv2.cvtColor(face_crop, cv2.COLOR_RGB2BGR))
+
+        entry = {
+            "id": uid,
+            "track_id": track_id,
+            "frame": frame_idx,
+            "image": str(img_path.relative_to(self._dir.parent) if img_path.parent != self._dir.parent else str(img_path)),
+            "det_score": round(det_score, 3),
+            "embedding": base64.b64encode(embedding.astype(np.float32).tobytes()).decode(),
+            "captured_at": time.time(),
+            "matched_name": None,
+            "match_confidence": None,
+        }
+        self._index.append(entry)
+        self._seq += 1
+        self.save()
+        log.info("Captured unknown face %s (track %d, frame %d)", uid, track_id, frame_idx)
+        return uid
+
+    def list_unknowns(self) -> list[dict]:
+        """Return all unknown entries with embedding decoded."""
+        result = []
+        for entry in self._index:
+            e = dict(entry)
+            emb_bytes = base64.b64decode(e["embedding"])
+            e["embedding"] = np.frombuffer(emb_bytes, dtype=np.float32).copy()
+            result.append(e)
+        return result
+
+    def list_unmatched(self) -> list[dict]:
+        """Return only unknown entries that haven't been matched yet."""
+        return [e for e in self.list_unknowns() if e["matched_name"] is None]
+
+    def mark_matched(self, uid: str, name: str, confidence: float):
+        for entry in self._index:
+            if entry["id"] == uid:
+                entry["matched_name"] = name
+                entry["match_confidence"] = round(confidence, 3)
+                break
+        self.save()
+
+    def promote_to_gallery(self, uid: str, name: str,
+                           face_recognizer: "FaceRecognizer") -> bool:
+        """Promote an unknown face to the known gallery with a name."""
+        for entry in self._index:
+            if entry["id"] != uid:
+                continue
+            if entry["matched_name"] and entry["matched_name"] != name:
+                log.warning("Overwriting previous match for %s", uid)
+            emb_bytes = base64.b64decode(entry["embedding"])
+            embedding = np.frombuffer(emb_bytes, dtype=np.float32).copy()
+            face_recognizer.gallery.add(name, embedding)
+            entry["matched_name"] = name
+            entry["match_confidence"] = 1.0
+            self.save()
+            log.info("Promoted %s → '%s'", uid, name)
+            return True
+        return False
+
+    def count(self) -> int:
+        return len(self._index)

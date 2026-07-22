@@ -169,7 +169,7 @@ class CameraSimulator:
 
     def summary(self) -> dict:
         if not self.lag_records:
-            return {"processed": 0, "dropped": self.dropped, "avg_lag": 0, "max_lag": 0, "p95_lag": 0}
+            return {"processed": 0, "dropped": self.dropped, "avg_lag": 0, "max_lag": 0, "p95_lag": 0, "p99_lag": 0}
         lags = [r["lag_s"] for r in self.lag_records]
         sorted_lags = sorted(lags)
         return {

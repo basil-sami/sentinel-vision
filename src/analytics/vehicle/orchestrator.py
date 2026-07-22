@@ -45,7 +45,7 @@ class VehicleAnalyzer:
             self._buffers[track_id] = TopKBuffer(k=TOP_K_PLATES)
         return self._buffers[track_id]
 
-    def process_frame(self, frame, tracks: list, frame_index: int, calibrator) -> list[Event]:
+    def process_frame(self, frame, tracks: list, frame_index: int, calibrator=None) -> list[Event]:
         events = []
         seen_tracks = set()
 
