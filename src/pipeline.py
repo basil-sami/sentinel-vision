@@ -409,6 +409,37 @@ def analyze_video(
             summary_lines.append(f"  [{ev.event_type}] {ev.message}")
         summary_lines.append(f"")
 
+    # Vehicle intelligence
+    v = result.get("vehicles", {})
+    if v.get("total_vehicles", 0) > 0:
+        summary_lines.append(f"Vehicle Intelligence:")
+        summary_lines.append(f"  Total:      {v['total_vehicles']}")
+        summary_lines.append(f"  With plates: {v['with_plates']}")
+        summary_lines.append(f"  Without:    {v['without_plates']}")
+        summary_lines.append(f"  Visits:     {v['total_visits']}")
+        for vl in result.get("vehicle_list", [])[:5]:
+            plate = vl.get("plate") or "no-plate"
+            color = vl.get("color", "unknown")
+            vtype = vl.get("vehicle_type", "unknown")
+            summary_lines.append(f"  {plate:>10s}  {color:>8s}  {vtype:>10s}  {vl['visit_count']} visit(s)")
+        summary_lines.append(f"")
+
+    # Face recognitions
+    idents = result.get("identities", [])
+    if idents:
+        summary_lines.append(f"Face Recognitions ({len(idents)}):")
+        for id_ in idents:
+            summary_lines.append(f"  Track {id_['track_id']}: {id_['name']} (conf={id_['confidence']})")
+        summary_lines.append(f"")
+
+    # Correlated incidents
+    incs = result.get("incidents", [])
+    if incs:
+        summary_lines.append(f"Correlated Incidents ({len(incs)}):")
+        for inc in incs:
+            summary_lines.append(f"  [{inc['severity'].upper()}] {inc['incident_type']}: {inc['summary']}")
+        summary_lines.append(f"")
+
     if objects_export:
         longest = max(objects_export, key=lambda o: o["duration_frames"])
         summary_lines.append(
