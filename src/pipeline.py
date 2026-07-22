@@ -20,6 +20,11 @@ from src.analytics.interaction import InteractionModel
 from src.analytics.evidence import EvidenceCapture
 from src.analytics.vehicle.orchestrator import VehicleAnalyzer
 from src.analytics.scene.orchestrator import SceneAnalyzer
+from src.analytics.identity import IdentityConfidence
+from src.analytics.prediction import TrackPredictor
+from src.analytics.correlation import EventCorrelator
+from src.analytics.time_sync import TimeSync
+from src.analytics.face_recognition import FaceRecognizer
 from src.models.event import EventStore, Event
 from src.visualization import Annotator
 from src.visualization.zone_renderer import draw_zones, draw_gates, draw_event_ticker
@@ -104,6 +109,11 @@ def analyze_video(
     interaction_model = InteractionModel()
     vehicle_analyzer = VehicleAnalyzer(plate_read_interval=plate_read_interval)
     scene_analyzer = SceneAnalyzer()
+    identity_tracker = IdentityConfidence()
+    predictor = TrackPredictor()
+    correlator = EventCorrelator()
+    time_sync = TimeSync(fps=loader.fps)
+    face_recognizer = FaceRecognizer(device=device)
 
     output_video_path = str(output_dir / "output_tracking.mp4")
     annotator = Annotator(
@@ -213,8 +223,49 @@ def analyze_video(
         for se in scene_events:
             events.add(se)
 
+        # Identity confidence tracking per track
+        for t in tracks:
+            identity_tracker.update(t.id, t.bbox, t.confidence, i)
+            cx = (t.bbox[0] + t.bbox[2]) // 2
+            cy = (t.bbox[1] + t.bbox[3]) // 2
+            predictor.update(t.id, cx, cy, i)
+
+        # Time sync
+        ts = time_sync.frame_timestamp(i)
+
+        # Face recognition (person tracks only)
+        face_events = face_recognizer.process_frame(frame, tracks, i)
+        for fe in face_events:
+            events.add(Event(
+                event_type=fe["type"],
+                track_id=fe["track_id"],
+                class_name="person",
+                message=f"Recognized {fe['name']} (track {fe['track_id']}, confidence={fe['confidence']})",
+            ))
+
+        # Event correlation
+        for ev in events.recent(5):
+            inc = correlator.process_event({
+                "type": ev.event_type,
+                "track_id": ev.track_id,
+                "timestamp": ts.utc_timestamp,
+                "severity": ev.severity,
+            })
+            if inc:
+                events.add(Event(
+                    event_type=f"incident_{inc.incident_type}",
+                    track_id=list(inc.track_ids)[0] if inc.track_ids else -1,
+                    class_name="system",
+                    severity=inc.severity,
+                    message=inc.summary,
+                ))
+
         # Render
-        annotated = annotator.draw_tracks(frame, tracks, history, trail_length=trail_length)
+        face_ids = face_recognizer.get_all_identities()
+        annotated = annotator.draw_tracks(
+            frame, tracks, history, trail_length=trail_length,
+            identities=face_ids if face_ids else None,
+        )
         annotated_bgr = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
 
         active_zone_names = set()
@@ -289,6 +340,11 @@ def analyze_video(
             "person_carrying": len(events.by_type("person_carrying")),
             "overloaded_vehicle": len(events.by_type("overloaded_vehicle")),
         },
+        "identities": [
+            {"track_id": tid, "name": name, "confidence": conf}
+            for tid, (name, conf) in face_recognizer.get_all_identities().items()
+        ],
+        "incidents": [inc.to_dict() for inc in correlator.incidents()],
     }
 
     if evidence:

@@ -72,6 +72,9 @@ class EventStore:
     def by_type(self, event_type: str) -> list[Event]:
         return [e for e in self._events if e.event_type == event_type]
 
+    def recent(self, n: int = 5) -> list[Event]:
+        return self._events[-n:]
+
     def by_severity(self, level: str) -> list[Event]:
         return [e for e in self._events if e.severity == level]
 
