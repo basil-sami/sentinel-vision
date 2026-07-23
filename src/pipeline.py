@@ -59,6 +59,7 @@ def analyze_video(
     reid_new_track_frames: int = 3,
     min_face_size: int = 40,
     face_interval: int = 6,
+    skip_face: bool = False,
     detector: "YOLODetector | None" = None,
 ) -> dict:
     output_dir = Path(output_dir)
@@ -115,8 +116,9 @@ def analyze_video(
     predictor = TrackPredictor()
     correlator = EventCorrelator()
     time_sync = TimeSync(fps=loader.fps)
-    face_recognizer = FaceRecognizer(device=device, min_face_size=min_face_size)
-    face_recognizer._face_interval = face_interval
+    face_recognizer = FaceRecognizer(device=device, min_face_size=min_face_size) if not skip_face else None
+    if face_recognizer is not None:
+        face_recognizer._face_interval = face_interval
 
     output_video_path = str(output_dir / "output_tracking.mp4")
     annotator = Annotator(
@@ -237,14 +239,15 @@ def analyze_video(
         ts = time_sync.frame_timestamp(i)
 
         # Face recognition (person tracks only)
-        face_events = face_recognizer.process_frame(frame, tracks, i)
-        for fe in face_events:
-            events.add(Event(
-                event_type=fe["type"],
-                track_id=fe["track_id"],
-                class_name="person",
-                message=f"Recognized {fe['name']} (track {fe['track_id']}, confidence={fe['confidence']})",
-            ))
+        if face_recognizer is not None:
+            face_events = face_recognizer.process_frame(frame, tracks, i)
+            for fe in face_events:
+                events.add(Event(
+                    event_type=fe["type"],
+                    track_id=fe["track_id"],
+                    class_name="person",
+                    message=f"Recognized {fe['name']} (track {fe['track_id']}, confidence={fe['confidence']})",
+                ))
 
         # Event correlation
         for ev in events.recent(5):
@@ -264,7 +267,7 @@ def analyze_video(
                 ))
 
         # Render
-        face_ids = face_recognizer.get_all_identities()
+        face_ids = face_recognizer.get_all_identities() if face_recognizer is not None else {}
         annotated = annotator.draw_tracks(
             frame, tracks, history, trail_length=trail_length,
             identities=face_ids if face_ids else None,
@@ -346,7 +349,8 @@ def analyze_video(
         },
         "identities": [
             {"track_id": tid, "name": name, "confidence": conf}
-            for tid, (name, conf) in face_recognizer.get_all_identities().items()
+            for tid, (name, conf) in (face_recognizer.get_all_identities().items()
+                                       if face_recognizer is not None else [])
         ],
         "incidents": [inc.to_dict() for inc in correlator.incidents()],
     }

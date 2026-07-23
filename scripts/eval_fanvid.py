@@ -194,10 +194,10 @@ def download_clip(clip: dict, output_dir: Path) -> Path | None:
     if out_path.exists() and out_path.stat().st_size > 1000:
         return out_path
 
-    # yt-dlp with download-time trimming
+    # yt-dlp with download-time trimming; prefer H.264 to avoid AV1 decode issues
     cmd = [
         "yt-dlp", "--quiet", "--no-warnings",
-        "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]",
+        "-f", "bestvideo[height<=720][codec=h264]+bestaudio/best[height<=720]",
         "--merge-output-format", "mp4",
         "--external-downloader", "ffmpeg",
         "--external-downloader-args",
@@ -217,7 +217,7 @@ def download_clip(clip: dict, output_dir: Path) -> Path | None:
     full_path = output_dir / f"full_{clip['video_id']}.mp4"
     dl_cmd = [
         "yt-dlp", "--quiet", "--no-warnings",
-        "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]",
+        "-f", "bestvideo[height<=720][codec=h264]+bestaudio/best[height<=720]",
         "--merge-output-format", "mp4",
         "-o", str(full_path), clip["url"],
     ]
@@ -341,6 +341,10 @@ def eval_face_direct(
         ret, frame = cap.read()
         if not ret:
             break
+        # Upscale 2× for better face detection at LR
+        h, w = frame.shape[:2]
+        if max(h, w) < 640:
+            frame = cv2.resize(frame, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         faces = app.get(rgb)
         if not faces:
@@ -390,18 +394,49 @@ def eval_face_direct(
     }
 
 
+def _upscale_video(input_path: Path, factor: int = 2) -> Path | None:
+    """Create an upscaled copy of the video for better detection at LR."""
+    out = input_path.with_suffix(f".{factor}x.mp4")
+    if out.exists() and out.stat().st_size > 1000:
+        return out
+    cap = cv2.VideoCapture(str(input_path))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if total == 0:
+        cap.release()
+        return None
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(out), fourcc, fps, (w * factor, h * factor))
+    for _ in range(total):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        up = cv2.resize(frame, (w * factor, h * factor), interpolation=cv2.INTER_CUBIC)
+        writer.write(up)
+    writer.release()
+    cap.release()
+    return out if out.exists() and out.stat().st_size > 1000 else None
+
+
 def eval_lp_pipeline(
     video_path: Path, clip: dict, device: str,
     model_size: str, output_root: Path,
 ) -> dict:
-    """Run pipeline on LP clip and compare plate to ground truth."""
+    """Run pipeline on LP clip and compare plate to ground truth.
+    Upscales LR video 2× before YOLO for better vehicle detection."""
     clip_label = f"LP-{clip['name']} [{clip['clip_id']}]"
     out_dir = output_root / f"lp_{clip['clip_id']}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Upscale LR video 2× for better vehicle detection
+    up_path = _upscale_video(video_path, factor=2)
+    pipe_path = up_path if up_path is not None else video_path
+
     try:
         result = analyze_video(
-            video_path=str(video_path),
+            video_path=str(pipe_path),
             output_dir=str(out_dir),
             model_family="yolo11",
             model_size=model_size,
@@ -411,6 +446,7 @@ def eval_lp_pipeline(
             filter_stationary_objects=False,
             min_move_distance=5.0,
             use_reid=False,
+            skip_face=True,
         )
     except Exception as e:
         return {"clip": clip_label, "gt": clip["name"], "error": str(e)[:100]}
@@ -547,8 +583,8 @@ def main():
                              "'both'=compare both")
     parser.add_argument("--min-face-size", type=int, default=20,
                         help="Minimum face size in pixels (FANVID LR=180×320, use 20)")
-    parser.add_argument("--match-threshold", type=float, default=0.35,
-                        help="Cosine similarity threshold for face matching (LR needs lower)")
+    parser.add_argument("--match-threshold", type=float, default=0.30,
+                        help="Cosine similarity threshold for face matching (LR needs lower, default 0.30)")
     parser.add_argument("--face-interval", type=int, default=3,
                         help="Process face every N frames in pipeline mode")
     parser.add_argument("--data-dir", default="data/FANVID")
