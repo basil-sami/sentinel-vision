@@ -42,7 +42,7 @@ def export_to_engine(
         raise ImportError("ultralytics is required for TensorRT export")
 
     pt = pt_path(model_family, model_size)
-    model = YOLO(pt)
+    model = YOLO(pt, task="detect")
     export_kwargs = dict(
         format="engine",
         half=half,

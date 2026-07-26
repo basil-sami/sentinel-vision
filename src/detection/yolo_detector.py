@@ -1,9 +1,13 @@
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import numpy as np
 from ultralytics import YOLO
 
 from src.optimization.tensorrt_export import has_engine, engine_path, export_to_engine
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -146,12 +150,18 @@ class YOLODetector:
                 except Exception:
                     model_path = None
             if model_path and Path(model_path).exists():
-                self.model = YOLO(model_path)
-                return
+                try:
+                    self.model = YOLO(model_path, task="detect")
+                    return
+                except Exception as exc:
+                    # TensorRT engines are tied to the TensorRT/CUDA runtime
+                    # that built them. Colab images can change underneath a
+                    # cached engine, so continue with the portable .pt model.
+                    log.warning("Unable to load TensorRT engine %s: %s; falling back to PyTorch.", model_path, exc)
 
         family = MODEL_FAMILIES.get(model_family, MODEL_FAMILIES["yolo11"])
         model_name = family.get(model_size, "yolo11n.pt")
-        self.model = YOLO(model_name)
+        self.model = YOLO(model_name, task="detect")
 
     @classmethod
     def shared(
