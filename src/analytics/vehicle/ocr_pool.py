@@ -54,17 +54,7 @@ class OcrPool:
                     try:
                         self._ocr = PaddleOCR(**legacy_kwargs, device=device)
                     except TypeError:
-                        try:
-                            self._ocr = PaddleOCR(**legacy_kwargs)
-                        except TypeError:
-                            # A CPU-only Paddle runtime cannot accept gpu:0;
-                            # retry with the PaddleOCR 3.x CPU constructor.
-                            self._ocr = PaddleOCR(
-                                lang="en",
-                                use_doc_orientation_classify=False,
-                                use_doc_unwarping=False,
-                                use_textline_orientation=False,
-                            )
+                        self._ocr = PaddleOCR(**legacy_kwargs)
             except (ImportError, ModuleNotFoundError):
                 self._ocr_fallback = True
                 return None
