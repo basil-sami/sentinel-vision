@@ -24,13 +24,15 @@ class PlateReader:
             results = self._run_ocr(variant)
             if results is None:
                 continue
-            if isinstance(results, list) and len(results) > 0 and results[0] is not None:
-                for line in results[0]:
-                    bbox, (text, conf) = line
+            if isinstance(results, list):
+                for line in results:
+                    bbox = line.get("bbox", (0, 0, 0, 0))
+                    text = line.get("text", "")
+                    conf = float(line.get("confidence", 0.0))
                     validated, qual = validate_plate(text)
                     if validated and conf > best_conf:
-                        w = bbox[1][0] - bbox[0][0]
-                        h = bbox[1][1] - bbox[0][1]
+                        w = bbox[2] - bbox[0]
+                        h = bbox[3] - bbox[1]
                         aspect = w / h if h > 0 else 0
                         if 1.5 < aspect < 8.0 or len(validated) >= 3:
                             best_text = validated
@@ -55,13 +57,15 @@ class PlateReader:
         best_text = ""
         best_conf = 0.0
 
-        if isinstance(results, list) and len(results) > 0 and results[0] is not None:
-            for line in results[0]:
-                bbox, (text, conf) = line
+        if isinstance(results, list):
+            for line in results:
+                bbox = line.get("bbox", (0, 0, 0, 0))
+                text = line.get("text", "")
+                conf = float(line.get("confidence", 0.0))
                 validated, qual = validate_plate(text)
                 if validated and conf > best_conf:
-                    w = bbox[1][0] - bbox[0][0]
-                    h = bbox[1][1] - bbox[0][1]
+                    w = bbox[2] - bbox[0]
+                    h = bbox[3] - bbox[1]
                     aspect = w / h if h > 0 else 0
                     if 1.5 < aspect < 8.0 or len(validated) >= 3:
                         best_text = validated

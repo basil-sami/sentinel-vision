@@ -25,6 +25,7 @@ from src.analytics.prediction import TrackPredictor
 from src.analytics.correlation import EventCorrelator
 from src.analytics.time_sync import TimeSync
 from src.analytics.face_recognition import FaceRecognizer
+from src.db.repository import AnalyticsDB
 from src.models.event import EventStore, Event
 from src.visualization import Annotator
 from src.visualization.zone_renderer import draw_zones, draw_gates, draw_event_ticker
@@ -60,6 +61,7 @@ def analyze_video(
     min_face_size: int = 40,
     face_interval: int = 6,
     skip_face: bool = False,
+    camera_id: str = "",
     detector: "YOLODetector | None" = None,
 ) -> dict:
     output_dir = Path(output_dir)
@@ -93,6 +95,7 @@ def analyze_video(
         use_cmc=use_cmc,
         reid_refresh_interval=reid_refresh_interval,
         reid_new_track_frames=reid_new_track_frames,
+        camera_id=camera_id,
     )
     history = ObjectHistory()
     events = EventStore()
@@ -110,7 +113,7 @@ def analyze_video(
     event_detector = EventDetector()
     abandoned_detector = AbandonedDetector(stationary_threshold_frames=track_buffer)
     interaction_model = InteractionModel()
-    vehicle_analyzer = VehicleAnalyzer(plate_read_interval=plate_read_interval)
+    vehicle_analyzer = VehicleAnalyzer(plate_read_interval=plate_read_interval, device=device)
     scene_analyzer = SceneAnalyzer()
     identity_tracker = IdentityConfidence()
     predictor = TrackPredictor()
@@ -136,6 +139,11 @@ def analyze_video(
             width=loader.width,
             height=loader.height,
         )
+
+    # Database
+    db = AnalyticsDB(str(output_dir / "analytics.db"))
+    db.connect()
+    run_id = db.start_run(camera_id, video_path, model_family, model_size)
 
     total_frames = min(loader.frame_count, max_frames) if max_frames else loader.frame_count
     pbar = tqdm(total=total_frames, desc="Processing video")
@@ -361,6 +369,15 @@ def analyze_video(
     import json
     analytics_path = output_dir / "analytics.json"
     analytics_path.write_text(json.dumps(result, indent=2))
+
+    # Database writes
+    db.insert_tracks_batch(run_id, camera_id, objects_export)
+    db.insert_events_batch(run_id, camera_id, events.export())
+    for gate_name, counts in gate_counter.summary().items():
+        db.upsert_gate_count(run_id, camera_id, gate_name,
+                              counts["entries"], counts["exits"], counts["net"])
+    db.finish_run(run_id, result)
+    db.close()
 
     summary_path = output_dir / "summary.txt"
     summary_lines = [

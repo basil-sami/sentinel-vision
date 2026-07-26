@@ -40,8 +40,10 @@ def process_cameras(
     def _run_one(i: int, cfg: dict) -> tuple[str, dict]:
         cam_key = f"camera_{i}"
         cam_out = str(output_dir / cam_key)
+        camera_id = cfg.get("camera_id", cfg.get("name", cam_key))
         pipe_kwargs = {k: v for k, v in cfg.items()
-                       if k not in ("video_path", "output_dir", "name")}
+                       if k not in ("video_path", "output_dir", "name", "camera_id")}
+        pipe_kwargs["camera_id"] = camera_id
 
         print(f"\n{'='*50}")
         print(f"Camera {i}: {cfg.get('name', cam_key)}")

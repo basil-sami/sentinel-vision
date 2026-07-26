@@ -50,6 +50,8 @@ def merge_fragments(
 
                 existing["_path"].extend(path)
                 existing["_last_frame"] = last_frame
+                existing["embedding_b64"] = obj.get("embedding_b64")
+                existing["global_id"] = obj.get("global_id", -1)
                 matched = True
                 break
 
@@ -61,6 +63,9 @@ def merge_fragments(
                     "_first_frame": first_frame,
                     "_path": list(path),
                     "_last_frame": last_frame,
+                    "camera_id": obj.get("camera_id", ""),
+                    "global_id": obj.get("global_id", -1),
+                    "embedding_b64": obj.get("embedding_b64"),
                 }
                 next_id += 1
 
@@ -77,6 +82,9 @@ def merge_fragments(
                 "last_frame": obj["_last_frame"],
                 "path": path,
                 "confidence": 0.0,
+                "camera_id": obj.get("camera_id", ""),
+                "global_id": obj.get("global_id", -1),
+                "embedding_b64": obj.get("embedding_b64"),
             }
         )
 

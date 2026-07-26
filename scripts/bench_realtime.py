@@ -102,7 +102,7 @@ class CameraSimulator:
         # Pipeline stages
         self.tracker = Tracker(
             track_thresh=0.4, track_low_thresh=0.1, track_buffer=450,
-            match_thresh=0.7, use_reid=False, device=detector.device,
+            match_thresh=0.7, use_reid=True, device=detector.device,
             use_cmc=False,
         )
         self.identity = IdentityConfidence()

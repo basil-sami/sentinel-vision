@@ -1,6 +1,8 @@
 from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor
 
+import cv2
+
 from src.analytics.vehicle.plate_detector import PlateDetector
 from src.analytics.vehicle.plate_reader import PlateReader
 from src.analytics.vehicle.attributes import extract_vehicle_color, vehicle_size_class
@@ -30,8 +32,10 @@ OCR_FRAME_INTERVAL = 20
 
 
 class VehicleAnalyzer:
-    def __init__(self, parking_timeout_sec: float = 300.0, plate_read_interval: int = 10):
-        self._ocr_pool = get_ocr_pool()
+    def __init__(self, parking_timeout_sec: float = 300.0, plate_read_interval: int = 10,
+                 device: str = "cpu"):
+        ocr_device = "gpu:0" if device.startswith("cuda") else device
+        self._ocr_pool = get_ocr_pool(device=ocr_device)
         self._ocr_pool.warmup()
         self._plate_detector = PlateDetector(self._ocr_pool)
         self._plate_reader = PlateReader(self._ocr_pool)
@@ -55,6 +59,10 @@ class VehicleAnalyzer:
     def process_frame(self, frame, tracks: list, frame_index: int, calibrator=None) -> list[Event]:
         events = []
         seen_tracks = set()
+
+        # VideoLoader exposes RGB frames; OpenCV/PaddleOCR image arrays are
+        # conventionally BGR. Keep the ANPR path in the expected color order.
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
         self._collect_pending_reads(events)
 
@@ -113,16 +121,16 @@ class VehicleAnalyzer:
                     if attrs.plate.state == AttributeState.UNKNOWN:
                         attrs.plate.state = AttributeState.PROCESSING
 
-                    plate_result = self._plate_detector.detect(frame, t.bbox)
+                    plate_result = self._plate_detector.detect(frame_bgr, t.bbox)
                     if plate_result:
-                        crop = frame[
+                        crop = frame_bgr[
                             plate_result["bbox"][1]:plate_result["bbox"][3],
                             plate_result["bbox"][0]:plate_result["bbox"][2],
                         ]
                         if crop.size > 0:
                             buffer.evaluate_and_add(
                                 plate_crop=crop,
-                                vehicle_crop=frame[t.bbox[1]:t.bbox[3], t.bbox[0]:t.bbox[2]],
+                                vehicle_crop=frame_bgr[t.bbox[1]:t.bbox[3], t.bbox[0]:t.bbox[2]],
                                 plate_bbox=plate_result["bbox"],
                                 detection_conf=plate_result.get("confidence", 0.5),
                                 frame_index=frame_index,

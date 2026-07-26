@@ -1,4 +1,6 @@
-from dataclasses import dataclass, field
+import base64
+
+import numpy as np
 
 
 @dataclass
@@ -18,6 +20,9 @@ class ObjectRecord:
     last_frame: int
     positions: list[tuple[int, int]] = field(default_factory=list)
     bboxes: list[tuple[int, int, int, int]] = field(default_factory=list)
+    camera_id: str = ""
+    global_id: int = -1
+    embedding: np.ndarray | None = None
 
     def add_position(self, frame: int, bbox: tuple[int, int, int, int]):
         cx = (bbox[0] + bbox[2]) // 2
@@ -35,6 +40,9 @@ class ObjectRecord:
         return self.last_frame - self.first_frame + 1
 
     def to_dict(self) -> dict:
+        emb_b64 = None
+        if self.embedding is not None:
+            emb_b64 = base64.b64encode(self.embedding.tobytes()).decode()
         return {
             "id": self.id,
             "class": self.class_name,
@@ -43,7 +51,27 @@ class ObjectRecord:
             "last_frame": self.last_frame,
             "duration_frames": self.duration_frames,
             "path": self.centroid_path,
+            "camera_id": self.camera_id,
+            "global_id": self.global_id,
+            "embedding_b64": emb_b64,
         }
+
+    @staticmethod
+    def from_dict(d: dict) -> "ObjectRecord":
+        emb = None
+        if d.get("embedding_b64"):
+            emb = np.frombuffer(base64.b64decode(d["embedding_b64"]), dtype=np.float32).copy()
+        return ObjectRecord(
+            id=d["id"],
+            class_name=d["class"],
+            class_id=d.get("class_id", -1),
+            first_frame=d["first_frame"],
+            last_frame=d["last_frame"],
+            positions=[(p[0], p[1]) for p in d.get("path", [])],
+            camera_id=d.get("camera_id", ""),
+            global_id=d.get("global_id", -1),
+            embedding=emb,
+        )
 
 
 class ObjectHistory:
@@ -60,8 +88,13 @@ class ObjectHistory:
                     class_id=t.class_id,
                     first_frame=frame_index,
                     last_frame=frame_index,
+                    camera_id=getattr(t, "camera_id", ""),
+                    global_id=getattr(t, "global_id", -1),
                 )
-            self._objects[t.id].add_position(frame_index, t.bbox)
+            rec = self._objects[t.id]
+            rec.add_position(frame_index, t.bbox)
+            if t.embedding is not None:
+                rec.embedding = t.embedding.copy()
             seen_ids.add(t.id)
 
     @property

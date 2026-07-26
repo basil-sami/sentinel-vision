@@ -11,8 +11,10 @@ boxmot>=19.0.0
 pyyaml>=6.0
 
 # Vehicle Intelligence (ANPR) — install at least one:
-#   pip install easyocr         # lightweight OCR fallback
-#   pip install paddlepaddle paddleocr  # production-grade ANPR (preferred)
+paddleocr>=3.0.0,<4.0.0        # production-grade plate detection + OCR
+# PaddlePaddle is installed separately in the Colab notebook because the
+# correct package is GPU/CUDA-version specific (paddlepaddle-gpu vs CPU).
+#   pip install easyocr         # optional OCR fallback
 
 # Optimizations (optional — install only for multi-camera / production use)
 # numba: JIT-compiles hot loops (zone containment, gate crossing)

@@ -52,19 +52,17 @@ class PlateDetector:
     def _parse_results(self, results, crop, x1: int, y1: int) -> dict | None:
         if results is None:
             return self._contour_fallback(crop, x1, y1) if crop is not None else None
-        if isinstance(results, list):
-            if len(results) > 0 and results[0] is not None:
-                best = max(results[0], key=lambda r: (r[1][2] - r[1][0]) * (r[1][3] - r[1][1]))
-                poly = best[0]
-                xs = [int(p[0]) for p in poly]
-                ys = [int(p[1]) for p in poly]
-                bx1, bx2 = min(xs), max(xs)
-                by1, by2 = min(ys), max(ys)
-                return {
-                    "bbox": (x1 + bx1, y1 + by1, x1 + bx2, y1 + by2),
-                    "confidence": 0.8,
-                    "method": "paddle",
-                }
+        if isinstance(results, list) and results:
+            best = max(
+                results,
+                key=lambda r: (r["bbox"][2] - r["bbox"][0]) * (r["bbox"][3] - r["bbox"][1]),
+            )
+            bx1, by1, bx2, by2 = best["bbox"]
+            return {
+                "bbox": (x1 + bx1, y1 + by1, x1 + bx2, y1 + by2),
+                "confidence": best.get("confidence", 0.8),
+                "method": "paddle",
+            }
         if crop is not None:
             return self._contour_fallback(crop, x1, y1)
         return None
