@@ -140,13 +140,24 @@ class AnalyticsDB:
     # --- Gate Counts ---
 
     def upsert_gate_count(self, run_id: int, camera_id: str, gate_name: str, entries: int, exits: int, net: int):
-        self.conn.execute(
-            """INSERT INTO gate_counts (run_id, camera_id, gate_name, entries, exits, net)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(run_id, camera_id, gate_name) DO UPDATE SET
-               entries=excluded.entries, exits=excluded.exits, net=excluded.net""",
-            (run_id, camera_id, gate_name, entries, exits, net),
-        )
+        # Use an explicit lookup so this also works with databases created by
+        # older schema versions that lack the composite UNIQUE constraint.
+        existing = self.conn.execute(
+            """SELECT id FROM gate_counts
+               WHERE run_id=? AND camera_id=? AND gate_name=?""",
+            (run_id, camera_id, gate_name),
+        ).fetchone()
+        if existing:
+            self.conn.execute(
+                """UPDATE gate_counts SET entries=?, exits=?, net=? WHERE id=?""",
+                (entries, exits, net, existing[0]),
+            )
+        else:
+            self.conn.execute(
+                """INSERT INTO gate_counts (run_id, camera_id, gate_name, entries, exits, net)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (run_id, camera_id, gate_name, entries, exits, net),
+            )
         self.conn.commit()
 
     # --- Queries ---

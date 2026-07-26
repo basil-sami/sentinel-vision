@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS gate_counts (
     gate_name       TEXT NOT NULL,
     entries         INTEGER DEFAULT 0,
     exits           INTEGER DEFAULT 0,
-    net             INTEGER DEFAULT 0
+    net             INTEGER DEFAULT 0,
+    UNIQUE(run_id, camera_id, gate_name)
 );
 
 CREATE TABLE IF NOT EXISTS evidence_clips (
