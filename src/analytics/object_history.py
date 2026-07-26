@@ -1,4 +1,5 @@
 import base64
+from dataclasses import dataclass, field
 
 import numpy as np
 
