@@ -22,11 +22,17 @@ OUTPUT_BASE.mkdir(parents=True, exist_ok=True)
 
 ZONE_CONFIG = SRC_DIR / "configs" / "demo_zones.json"
 CALIB_CONFIG = SRC_DIR / "configs" / "demo_calibration.json"
+TOPOLOGY_CONFIG = SRC_DIR / "configs" / "4cameras.json"
 
 zone_config = json.loads(ZONE_CONFIG.read_text())
 calib_config = {}
 if CALIB_CONFIG.exists():
     calib_config = json.loads(CALIB_CONFIG.read_text())
+
+topology_config = None
+if TOPOLOGY_CONFIG.exists():
+    topology_config = json.loads(TOPOLOGY_CONFIG.read_text())
+    print(f"Topology: {len(topology_config.get('cameras', []))} cameras loaded")
 
 camera_configs = []
 for name, rel_path in TEST_VIDEOS.items():
@@ -47,6 +53,7 @@ for name, rel_path in TEST_VIDEOS.items():
 pipeline = MultiCameraPipeline(
     camera_configs=camera_configs,
     output_dir=str(OUTPUT_BASE),
+    topology_config=topology_config,
 )
 
 print("Starting 4 feeds concurrently...")

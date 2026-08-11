@@ -64,8 +64,12 @@ class IdentityManager:
                     skipped += 1
                     continue
 
+                # Objects carry their real camera name (e.g. cam00_original) —
+                # match topology keys on that, not the internal cam_key.
+                real_cam = str(obj.get("camera_id") or cam_id)
+
                 obs = Observation(
-                    camera_id=cam_id,
+                    camera_id=real_cam,
                     local_track_id=obj.get("id", -1),
                     class_name=obj.get("class", ""),
                     first_frame=obj.get("first_frame", 0),
@@ -77,7 +81,7 @@ class IdentityManager:
                 gid, score, confident = find_best_match(
                     emb, candidates,
                     identity_cameras=identity_cams,
-                    camera_id=cam_id,
+                    camera_id=real_cam,
                     topology=self.topology,
                 )
 
@@ -146,22 +150,28 @@ class IdentityManager:
     def load_topology(config: dict | None) -> dict[str, set[str]]:
         """Build camera→neighbors map from a topology config.
 
-        Accepts {"cameras": [{"id": ..., "topology": {"adjacent": [...]}}]}
+        Accepts either:
+          {"cameras": [{"id"/"name": ..., "topology": {"neighbors": [...]}}]}
         or {camera_id: [adjacent_ids]}.
+
+        Supports both the `neighbors` and `adjacent` keys (the canonical
+        configs/4cameras.json uses `neighbors`).
         """
         if not config:
             return {}
         topo: dict[str, set[str]] = {}
         if "cameras" in config:
             for cam in config["cameras"]:
-                cid = cam.get("id") or cam.get("name", "")
+                cid = cam.get("name") or cam.get("id", "")
+                if cid is None or cid == "":
+                    cid = cam.get("id", "")
                 adj = []
                 if isinstance(cam.get("topology"), dict):
-                    adj = cam["topology"].get("adjacent", [])
+                    adj = cam["topology"].get("neighbors", cam["topology"].get("adjacent", []))
                 elif isinstance(cam.get("topology"), list):
                     adj = cam["topology"]
                 if cid and adj:
-                    topo[cid] = set(adj)
+                    topo[str(cid)] = set(adj)
         else:
             for cid, adj in config.items():
                 if isinstance(adj, (list, set)):

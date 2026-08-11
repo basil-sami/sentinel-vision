@@ -10,6 +10,7 @@ def process_cameras(
     output_dir: str = "outputs",
     mosaic_layout: str = "2x2",
     max_workers: int = 4,
+    topology_config: dict | None = None,
 ) -> dict:
     """Process N cameras in parallel using a thread pool.
 
@@ -123,7 +124,8 @@ def process_cameras(
 
         if camera_objects:
             topology = IdentityManager.load_topology(
-                camera_configs[0].get("topology_config")
+                topology_config
+                or (camera_configs[0].get("topology_config") if camera_configs else None)
             )
             mgr = IdentityManager(
                 store_path=str(output_dir / "identity_store.json"),
@@ -164,11 +166,13 @@ def process_cameras(
 
 class MultiCameraPipeline:
     def __init__(self, camera_configs, output_dir="outputs",
-                 mosaic_layout="2x2", max_workers=4):
+                 mosaic_layout="2x2", max_workers=4,
+                 topology_config: dict | None = None):
         self._camera_configs = camera_configs
         self._output_dir = output_dir
         self._mosaic_layout = mosaic_layout
         self._max_workers = max_workers
+        self._topology_config = topology_config
 
     def run(self) -> dict:
         return process_cameras(
@@ -176,4 +180,5 @@ class MultiCameraPipeline:
             self._output_dir,
             mosaic_layout=self._mosaic_layout,
             max_workers=self._max_workers,
+            topology_config=self._topology_config,
         )
