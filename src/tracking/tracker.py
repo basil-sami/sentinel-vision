@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 import torch
 
+from src.tracking.state import TrackState, TrackStateMachine
+
 try:
     from boxmot.trackers.botsort.botsort import BotSort
 except ImportError:
@@ -49,6 +51,7 @@ class Track:
     embedding_frame: int = -1
     camera_id: str = ""
     global_id: int = -1
+    state: str = "new"
     attributes: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -61,6 +64,7 @@ class Track:
             "age": self.age,
             "camera_id": self.camera_id,
             "global_id": self.global_id,
+            "state": self.state,
             "attributes": self.attributes,
         }
 
@@ -186,6 +190,9 @@ class Tracker:
         self._track_ages: dict[int, int] = {}
         self._track_embeddings: dict[int, np.ndarray] = {}
         self._track_embedding_frames: dict[int, int] = {}
+        self._state_machine = TrackStateMachine()
+        self._occluded_frames: dict[int, int] = {}
+        self._occlusion_ended_ids: set[int] = set()
 
     def _compute_embedding(self, frame: np.ndarray, bbox: tuple[int, int, int, int]) -> np.ndarray | None:
         if self._reid_wrapper is None:
@@ -251,6 +258,16 @@ class Tracker:
             age = self._track_ages.get(track_id, 0) + 1
             self._track_ages[track_id] = age
 
+            # State machine: NEW → ACTIVE, or OCCLUDED → ACTIVE recovery
+            if track_id not in self._state_machine._states:
+                self._state_machine.init_track(track_id, frame_index)
+            state = self._state_machine.get_state(track_id)
+            if state == TrackState.OCCLUDED:
+                self._occluded_frames.pop(track_id, None)
+            if state != TrackState.ACTIVE:
+                self._state_machine.transition(track_id, TrackState.ACTIVE, frame_index)
+                state = TrackState.ACTIVE
+
             is_new = age <= self._reid_new_track_frames
             needs_refresh = (
                 is_new
@@ -292,6 +309,7 @@ class Tracker:
                 embedding=embedding,
                 embedding_frame=embedding_frame,
                 camera_id=self._camera_id,
+                state=state,
             ))
 
         stale_ids = set(self._track_ages.keys()) - active_ids
@@ -299,5 +317,34 @@ class Tracker:
             self._track_ages.pop(sid, None)
             self._track_embeddings.pop(sid, None)
             self._track_embedding_frames.pop(sid, None)
+            # State machine: mark OCCLUDED → LOST → ENDED for vanished tracks
+            cur = self._state_machine.get_state(sid)
+            if cur in (TrackState.NEW, TrackState.ACTIVE, TrackState.OCCLUDED):
+                self._occluded_frames[sid] = self._occluded_frames.get(sid, 0) + 1
+                self._state_machine.transition(sid, TrackState.OCCLUDED, frame_index)
+            elif cur == TrackState.LOST:
+                self._state_machine.transition(sid, TrackState.ENDED, frame_index)
+                self._occlusion_ended_ids.add(sid)
+
+        # LOST tracking for long-occluded tracks (not in track_ages, but in state machine)
+        for sid, occ_frames in list(self._occluded_frames.items()):
+            if sid in active_ids:
+                continue
+            if occ_frames == -1:
+                # Already LOST — close the lifecycle
+                self._state_machine.transition(sid, TrackState.ENDED, frame_index)
+                self._occlusion_ended_ids.add(sid)
+                self._occluded_frames.pop(sid, None)
+            elif occ_frames >= 2 * self._reid_refresh_interval:
+                self._state_machine.transition(sid, TrackState.LOST, frame_index)
+                self._occluded_frames[sid] = -1
 
         return tracks
+
+    def state_summary(self) -> dict:
+        """Per-run track state counts (for identity quality metrics)."""
+        return self._state_machine.summary()
+
+    @property
+    def occlusion_count(self) -> int:
+        return len(self._occlusion_ended_ids)

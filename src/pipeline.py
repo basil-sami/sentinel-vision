@@ -361,6 +361,7 @@ def analyze_video(
                                        if face_recognizer is not None else [])
         ],
         "incidents": [inc.to_dict() for inc in correlator.incidents()],
+        "track_state_summary": tracker.state_summary(),
     }
 
     if evidence:

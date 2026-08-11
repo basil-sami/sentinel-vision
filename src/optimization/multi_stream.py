@@ -109,6 +109,37 @@ def process_cameras(
     report_path.write_text(json.dumps(report, indent=2))
     print(f"\nReport: {report_path}")
 
+    # ── Global identity matching across cameras ──
+    try:
+        from src.identity.identity_manager import IdentityManager
+        camera_objects = {}
+        for cam_key, cam_res in results.items():
+            if cam_res.get("error"):
+                continue
+            analytics_path = output_dir / cam_key / "analytics.json"
+            if analytics_path.exists():
+                data = json.loads(analytics_path.read_text())
+                camera_objects[cam_key] = data.get("objects", [])
+
+        if camera_objects:
+            topology = IdentityManager.load_topology(
+                camera_configs[0].get("topology_config")
+            )
+            mgr = IdentityManager(
+                store_path=str(output_dir / "identity_store.json"),
+                topology=topology,
+            )
+            id_summary = mgr.ingest(camera_objects)
+            id_report_path = mgr.write_report(
+                output_dir / "global_identity_report.json", id_summary)
+            report["global_identities"] = id_summary
+            print(f"\n  Global identities: {id_summary['total_global_identities']} "
+                  f"({id_summary['multi_camera_identities']} seen on 2+ cameras)")
+            print(f"  Identity report: {id_report_path}")
+            report_path.write_text(json.dumps(report, indent=2))
+    except Exception as e:
+        print(f"  Global identity matching skipped: {e}")
+
     # Auto-generate mosaic from all successfully processed cameras
     output_videos = {}
     for cam_key, cam_res in results.items():
